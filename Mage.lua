@@ -1288,7 +1288,7 @@ spec:RegisterAbilities( {
     flame_orb = {
         id = 82731,
         cast = 0,
-        cooldown = 1,
+        cooldown = 60,
         gcd = "spell",
 
         spend = 0.06,
@@ -1302,6 +1302,7 @@ spec:RegisterAbilities( {
         handler = function()
             --"/cata/spell=82731/flame-orb"
         end,
+        copy = { 82731, 92283 },
 
     },
 
