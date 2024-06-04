@@ -105,7 +105,7 @@ spec:RegisterAuras( {
     },
     -- Increases Intellect by $s1.
     arcane_brilliance = {
-        id = 23028,
+        id = 79058,
         duration = 3600,
         max_stack = 1,
         shared = "player",
@@ -149,6 +149,13 @@ spec:RegisterAuras( {
     -- $42938s1 Frost damage every $42938t1 $lsecond:seconds;.
     blizzard = {
         id = 42208,
+        duration = 8,
+        max_stack = 1,
+        copy = { 42208, 42209, 42210, 42211, 42212, 42213, 42198, 42939, 42940 },
+},
+ -- $42938s1 Frost damage every $42938t1 $lsecond:seconds;.
+    brain_freeze = {
+        id = 57761,
         duration = 8,
         max_stack = 1,
         copy = { 42208, 42209, 42210, 42211, 42212, 42213, 42198, 42939, 42940 },
@@ -252,7 +259,7 @@ spec:RegisterAuras( {
  },
     -- Your next $s1 spells treat the target as if it were Frozen.
     fingers_of_frost = {
-        id = 74396,
+        id = 44544,
         duration = 15,
         max_stack = 2,
 },
@@ -1116,7 +1123,7 @@ spec:RegisterAbilities( {
 
     -- Stuns the target for $d.  Only usable on Frozen targets.  Deals ${$71757m1*$<mult>} to ${$71757M1*$<mult>} damage to targets permanently immune to stuns.
     deep_freeze = {
-        id = 71757,
+        id = 44572,
         cast = 0,
         cooldown = 30,
         gcd = "off",
