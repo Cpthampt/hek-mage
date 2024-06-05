@@ -495,7 +495,7 @@ spec:RegisterAuras( {
 },
     -- Causes $43044s1 Fire damage to attackers.  Chance to receive a critical hit reduced by $s2%.  Critical strike rating increased by $s3% of Spirit.
     molten_armor = {
-        id = 34913,
+        id = 30482,
         duration = 1800,
         tick_time = 6,
         max_stack = 1,
