@@ -415,9 +415,15 @@ spec:RegisterAuras( {
         duration = 4,
         max_stack = 1,
 },
+-- Chance to be hit by all attacks and spells reduced by $s1%.
+    improved_cone_of_cold = {
+        id = 83302,
+        duration = 4,
+        max_stack = 1,
+},
     -- Spells have a $s1% additional chance to critically hit.
-    improved_scorch = {
-        id = 22959,
+    critical_mass = {
+        id = 25, 3, 11095, 12872, 12873,
         duration = 30,
         max_stack = 1,
 },
@@ -577,7 +583,7 @@ spec:RegisterAuras( {
         duration = 3600,
     },
     frozen = {
-        alias = { "deep_freeze", "frost_nova", "frostbite", "shattered_barrier" },
+        alias = { "deep_freeze", "frost_nova", "frostbite", "shattered_barrier", "improved_cone_of_cold" },
         aliasMode = "first",
         aliasType = "debuff",
     }
@@ -588,40 +594,37 @@ spec:RegisterAuras( {
 spec:RegisterGlyphs( {
     [63092] = "arcane_barrage",
     [62210] = "arcane_blast",
-    [56360] = "arcane_explosion",
-    [57924] = "arcane_intellect",
+    [57924] = "arcane_brilliance",
     [56363] = "arcane_missiles",
     [56381] = "arcane_power",
+    [89749] = "armors",
     [62126] = "blast_wave",
     [56365] = "blink",
+    [56364] = "cone_of_cold",
+    [57928] = "conjuring",
     [63090] = "deep_freeze",
-    [58070] = "drain_soul",
-    [70937] = "eternal_water",
+    [56373] = "dragons_breath",
     [56380] = "evocation",
-    [56369] = "fire_blast",
-    [57926] = "fire_ward",
     [56368] = "fireball",
-    [57928] = "frost_armor",
+    [98397] = "frost_armor",
     [56376] = "frost_nova",
-    [57927] = "frost_ward",
     [56370] = "frostbolt",
     [61205] = "frostfire",
-    [56384] = "ice_armor",
     [63095] = "ice_barrier",
     [56372] = "ice_block",
     [56377] = "ice_lance",
     [56374] = "icy_veins",
     [56366] = "invisibility",
-    [63091] = "living_bomb",
+    [89926] = "living_bomb",
     [56383] = "mage_armor",
-    [56367] = "mana_gem",
+    [70937] = "mana_shield",
     [63093] = "mirror_image",
     [56382] = "molten_armor",
     [56375] = "polymorph",
-    [56364] = "remove_curse",
-    [56371] = "scorch",
+    [56384] = "pyroblast",
+    [63091] = "slow",
     [57925] = "slow_fall",
-    [56373] = "water_elemental",
+    [57927] = "the_monkey",
 } )
 
 
@@ -753,7 +756,15 @@ spec:RegisterAbilities( {
         cooldown = 4,
         gcd = "spell",
 
-        spend = 0.11, 
+        spend = function()
+              if buff.clearcasting.up then
+                 return 0
+              else
+                 local base_cost = 0.11
+                 local cost_with_arcane_power = buff.arcane_power.up and base_cost * 1.1 or base_cost
+                 return cost_with_arcane_power
+              end
+        end,
         spendType = "mana",
         stance = "None",
         startsCombat = true,
@@ -764,6 +775,7 @@ spec:RegisterAbilities( {
 
         handler = function()
             removeDebuff( "player", "arcane_blast" )
+            if buff.clearcasting.up then removeBuff( "clearcasting" ) end
         end,
     },
 
@@ -806,7 +818,11 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = 0.26, 
+        spend = function()
+            local base_cost = 0.26
+            local cost_with_glyph = glyph.arcane_brilliance.enabled and base_cost * .5 or base_cost
+            return cost_with_glyph
+        end,
         spendType = "mana",
 
         startsCombat = false,
@@ -830,13 +846,21 @@ spec:RegisterAbilities( {
         gcd = "spell",
 
 
-        spend = function() return buff.clearcasting.up and 0 or 0.15 end,
+        spend = function()
+            if buff.clearcasting.up then
+                return 0
+            else
+                local base_cost = 0.15 * (1 - (talent.improved_arcane_explosion.rank * 0.25))
+                local cost_with_arcane_power = buff.arcane_power.up and base_cost * 1.1 or base_cost
+                return cost_with_arcane_power
+            end
+        end,
         spendType = "mana",
 
         startsCombat = true,
 
         handler = function()
-            removeDebuff( "player", "arcane_blast" )
+            return true
         end,
 
     },
@@ -1803,6 +1827,9 @@ spec:RegisterAbilities( {
             if buff.clearcasting.up then removeBuff( "clearcasting" )
             elseif buff.hot_streak.up then removeBuff( "hot_streak" ) end
             if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
+            if talent.critical_mass.rank == 3 then
+                            applyDebuff( "target", "critical_mass" )
+            end
         end,
 
         impact = function()
@@ -1902,8 +1929,8 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-            if talent.improved_scorch.rank == 3 then
-                applyDebuff( "target", "improved_scorch" )
+            if talent.critical_mass.rank == 3 then
+                applyDebuff( "target", "critical_mass" )
             end
 
         end,
