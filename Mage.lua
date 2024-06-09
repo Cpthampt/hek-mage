@@ -423,7 +423,7 @@ spec:RegisterAuras( {
 },
     -- Spells have a $s1% additional chance to critically hit.
     critical_mass = {
-        id = 25, 3, 11095, 12872, 12873,
+        id = 22959,
         duration = 30,
         max_stack = 1,
 },
@@ -876,7 +876,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return ( buff.clearcasting.up or buff.arcane_missiles.up ) and 0 or 0.310 * ( 1 - 0.01 * ( talent.precision.rank + talent.arcane_focus.rank ) ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return ( buff.clearcasting.up or buff.arcane_missiles.up ) and 0 or 0.310 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -935,13 +935,12 @@ spec:RegisterAbilities( {
         cooldown = 15,
         gcd = "spell",
 
-        spend = 0.07, 
         spendType = "mana",
 
         startsCombat = true,
         texture = 135903,
 
-        spend = function() return buff.clearcasting.up and 0 or 0.070 * ( 1 - 0.01 * ( talent.precision.rank + talent.arcane_focus.rank ) ) * ( buff.arcane_power.up and 1.2 or 1 ) * ( glyph.blast_wave.enabled and 0.85 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.070 * ( buff.arcane_power.up and 1.1 or 1 ) end,
 
 
         handler = function()
@@ -959,7 +958,7 @@ spec:RegisterAbilities( {
         cooldown = 15,
         gcd = "spell",
 
-        spend = function() return 0.210 * ( 1 - 0.01 * ( talent.precision.rank + talent.arcane_focus.rank ) ) * ( 1 - 0.25 * talent.improved_blink.rank ) end,
+        spend = function() return 0.12 end,
         spendType = "mana",
 
         startsCombat = false,
@@ -980,12 +979,15 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.740 * ( 1 - 0.01 * ( talent.precision.rank + talent.arcane_focus.rank ) ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.740 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
 
         handler = function()
+            if talent.improved_blizzard.enabled then
+                applyDebuff("chilled")
+            end
         end,
     },
 
@@ -997,11 +999,7 @@ spec:RegisterAbilities( {
             local base_cooldown = 480 -- base cooldown in seconds
 
             -- Get the talent ranks
-            local cold_as_ice_rank = talent.cold_as_ice.rank
             local ice_floes_rank = talent.ice_floes.rank
-
-            -- Calculate reduction from cold_as_ice
-            local cold_as_ice_reduction = cold_as_ice_rank * 0.10
 
             -- Calculate reduction from ice_floes
             local ice_floes_reduction = 0
@@ -1012,7 +1010,7 @@ spec:RegisterAbilities( {
             end
 
             -- Total reduction
-            local total_reduction = cold_as_ice_reduction + ice_floes_reduction
+            local total_reduction = ice_floes_reduction
 
             -- Calculate the final cooldown
             return base_cooldown * (1 - total_reduction)
@@ -1055,10 +1053,29 @@ spec:RegisterAbilities( {
     cone_of_cold = {
         id = 120,
         cast = 0,
-        cooldown = function() return 10 * ( 1 - min( 0.2, 0.07 * talent.ice_floes.rank ) ) end,
+        cooldown = function()
+                    local base_cooldown = 10 -- base cooldown in seconds
+
+                    -- Get the talent ranks
+                    local ice_floes_rank = talent.ice_floes.rank
+
+                    -- Calculate reduction from ice_floes
+                    local ice_floes_reduction = 0
+                    if ice_floes_rank == 3 then
+                        ice_floes_reduction = 0.20
+                    else
+                        ice_floes_reduction = ice_floes_rank * 0.07
+                    end
+
+                    -- Total reduction
+                    local total_reduction = ice_floes_reduction
+
+                    -- Calculate the final cooldown
+                    return base_cooldown * (1 - total_reduction)
+                end,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.250 * ( 1 - 0.01 * ( talent.precision.rank + talent.arcane_focus.rank ) ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.250 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1087,7 +1104,7 @@ spec:RegisterAbilities( {
 
         usable = function() return mana_gem_charges < 3, "mana gem is fully charged" end,
         handler = function()
-            if level > 77 then mana_gem_id = 33312
+            if level > 77 then mana_gem_id = 36799
             elseif level > 67 then mana_gem_id = 22044
             elseif level > 57 then mana_gem_id = 8008
             elseif level > 47 then mana_gem_id = 8007
@@ -1191,7 +1208,7 @@ spec:RegisterAbilities( {
         id = 12051,
         cast = function() return 8 * haste end,
         channeled = true,
-        cooldown = function() return 240 - 60 * talent.arcane_flows.rank end,
+        cooldown = function() return 240 - ( 60 * talent.arcane_flows.rank ) end,
         gcd = "spell",
 
         startsCombat = false,
@@ -1222,7 +1239,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.210 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.210 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1246,7 +1263,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return ( buff.clearcasting.up or buff.fireball_proc.up ) and 0 or 0.19 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return ( buff.clearcasting.up or buff.fireball_proc.up ) and 0 or 0.19 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1337,7 +1354,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return ( buff.firestarter.up or buff.clearcasting.up ) and 0 or 0.300 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return ( buff.firestarter.up or buff.clearcasting.up ) and 0 or 0.300 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1401,10 +1418,29 @@ spec:RegisterAbilities( {
     frost_nova = {
         id = 122,
         cast = 0,
-        cooldown = function() return 25 * ( 1 - ( min( 0.2, 0.07 * talent.ice_floes.rank ) ) ) end,
+        cooldown = function()
+                            local base_cooldown = 25 -- base cooldown in seconds
+
+                            -- Get the talent ranks
+                            local ice_floes_rank = talent.ice_floes.rank
+
+                            -- Calculate reduction from ice_floes
+                            local ice_floes_reduction = 0
+                            if ice_floes_rank == 3 then
+                                ice_floes_reduction = 0.20
+                            else
+                                ice_floes_reduction = ice_floes_rank * 0.07
+                            end
+
+                            -- Total reduction
+                            local total_reduction = ice_floes_reduction
+
+                            -- Calculate the final cooldown
+                            return base_cooldown * (1 - total_reduction)
+                        end,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.070 * ( 1 - 0.01 * buff.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.070 * ( 1 - 0.01 * buff.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1445,7 +1481,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.110 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.110 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1470,7 +1506,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.fireball_proc.up and 0 or 0.140 * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.fireball_proc.up and 0 or 0.140 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1497,30 +1533,25 @@ spec:RegisterAbilities( {
         id = 11426,
         cast = 0,
         cooldown = function()
-            local base_cooldown = 30 -- base cooldown in seconds
+                            local base_cooldown = 30 -- base cooldown in seconds
 
-            -- Get the talent ranks
-            local cold_as_ice_rank = talent.cold_as_ice.rank
-            local ice_floes_rank = talent.ice_floes.rank
-            local arctic_winds_rank = talent.arctic_winds.rank
+                            -- Get the talent ranks
+                            local ice_floes_rank = talent.ice_floes.rank
 
-            -- Calculate reduction from cold_as_ice
-            local cold_as_ice_reduction = cold_as_ice_rank * 0.10
+                            -- Calculate reduction from ice_floes
+                            local ice_floes_reduction = 0
+                            if ice_floes_rank == 3 then
+                                ice_floes_reduction = 0.20
+                            else
+                                ice_floes_reduction = ice_floes_rank * 0.07
+                            end
 
-            -- Calculate reduction from ice_floes
-            local ice_floes_reduction = 0
-            if ice_floes_rank == 3 then
-                ice_floes_reduction = 0.20
-            else
-                ice_floes_reduction = ice_floes_rank * 0.07
-            end
+                            -- Total reduction
+                            local total_reduction = ice_floes_reduction
 
-            -- Total reduction
-            local total_reduction = cold_as_ice_reduction + ice_floes_reduction
-
-            -- Calculate the final cooldown
-            return base_cooldown * (1 - total_reduction)
-        end,
+                            -- Calculate the final cooldown
+                            return base_cooldown * (1 - total_reduction)
+                        end,
         gcd = "spell",
 
         spend = 0.21,
@@ -1540,7 +1571,26 @@ spec:RegisterAbilities( {
     ice_block = {
         id = 45438,
         cast = 0,
-        cooldown = function() return 300 * ( talent.ice_floes.enabled and ( 1 - min( 0.2, 0.07 * talent.ice_floes.rank ) ) or 1 ) end,
+        cooldown = function()
+                            local base_cooldown = 300 -- base cooldown in seconds
+
+                            -- Get the talent ranks
+                            local ice_floes_rank = talent.ice_floes.rank
+
+                            -- Calculate reduction from ice_floes
+                            local ice_floes_reduction = 0
+                            if ice_floes_rank == 3 then
+                                ice_floes_reduction = 0.20
+                            else
+                                ice_floes_reduction = ice_floes_rank * 0.07
+                            end
+
+                            -- Total reduction
+                            local total_reduction = ice_floes_reduction
+
+                            -- Calculate the final cooldown
+                            return base_cooldown * (1 - total_reduction)
+                        end,
         gcd = "spell",
 
         spend = 15,
@@ -1564,7 +1614,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.060 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) * ( talent.frost_channeling.enabled and ( 0.99 - 0.03 * talent.frost_channeling.rank ) or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.060 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) * ( talent.frost_channeling.enabled and ( 0.99 - 0.03 * talent.frost_channeling.rank ) or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1619,7 +1669,7 @@ spec:RegisterAbilities( {
     invisibility = {
         id = 66,
         cast = 0,
-        cooldown = function() return 180 * ( 1 - 0.15 * talent.arcane_flows.rank ) end,
+        cooldown = function() return 180 * ( 1 - 0.125 * talent.arcane_flows.rank ) end,
         gcd = "spell",
 
         spend = 0.160,
@@ -1799,7 +1849,7 @@ spec:RegisterAbilities( {
 
         startsCombat = true,
         texture = 136031,
-        cooldown = function() return 120 - ( 1 - 0.15 * talent.arcane_flows.rank ) end,
+        cooldown = function() return 120 - ( 1 - 0.125 * talent.arcane_flows.rank ) end,
 
         toggle = "cooldowns",
 
@@ -1817,7 +1867,7 @@ spec:RegisterAbilities( {
         cooldown = function() return ( talent.fiery_payback.enabled and health.pct < 35 and ( 2.5 * buff.fiery_payback.rank ) or 0 ) end,
         gcd = "spell",
 
-        spend = function() return ( buff.clearcasting.up or buff.hot_streak.up ) and 0 or 0.220 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return ( buff.clearcasting.up or buff.hot_streak.up ) and 0 or 0.220 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1923,7 +1973,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.080 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.2 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.080 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
