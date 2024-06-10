@@ -110,7 +110,7 @@ spec:RegisterAuras( {
         max_stack = 1,
         shared = "player",
         dot = "buff",
-        copy = { 23028, 27127, 43002 },
+        copy = { 23028, 27127, 43002, 61316 },
  },
     -- Increases Intellect by $s1.
     arcane_intellect = {
@@ -465,7 +465,7 @@ spec:RegisterAuras( {
                 duration = string.match(description, "(%d+) sec")
             end
             if duration then
-                return tonumber(duration)
+                return tonumber(duration) + .25
             else
                 return nil -- Return nil if the duration is not found
             end
@@ -730,11 +730,11 @@ local mana_gem_values = {
     [8007] = 829,
     [8008] = 1073,
     [22044] = 2340,
-    [33312] = 3330
+    [36799] = 3330
 }
 
 spec:RegisterStateExpr( "mana_gem_charges", function() return 0 end )
-spec:RegisterStateExpr( "mana_gem_id", function() return 33312 end )
+spec:RegisterStateExpr( "mana_gem_id", function() return 36799 end )
 spec:RegisterStateExpr( "ignite_damage", function() return igniteDamage end )
 
 spec:RegisterStateExpr( "frozen", function()
@@ -1132,15 +1132,8 @@ spec:RegisterAbilities( {
 
         usable = function() return mana_gem_charges < 3, "mana gem is fully charged" end,
         handler = function()
-            if level > 77 then mana_gem_id = 36799
-            elseif level > 67 then mana_gem_id = 22044
-            elseif level > 57 then mana_gem_id = 8008
-            elseif level > 47 then mana_gem_id = 8007
-            elseif level > 37 then mana_gem_id = 5513
-            else mana_gem_id = 5514 end
-
+            mana_gem_id = 36799
             mana_gem_charges = 3
-
         end,
     },
 
@@ -1183,9 +1176,7 @@ spec:RegisterAbilities( {
 
         handler = function()
             interrupt()
-
             if talent.improved_counterspell.enabled then applyDebuff( "target", "silenced_improved_counterspell" ) end
-
         end,
 
     },
@@ -1205,9 +1196,8 @@ spec:RegisterAbilities( {
 
         debuff = function() return buff.fingers_of_frost.down and "frozen" or nil end,
         handler = function()
-            removeStack( "fingers_of_frost" )
+            if buff.fingers_of_frost.up then removeStack( "fingers_of_frost" ) end
             applyDebuff( "target", "deep_freeze" )
-
         end,
     },
 
@@ -1284,9 +1274,9 @@ spec:RegisterAbilities( {
     fireball = {
         id = 133,
         cast = function()
-            if buff.fireball_proc.up or buff.presence_of_mind.up then return 0 end
+            if buff.presence_of_mind.up then return 0 end
             local base = level > 23 and 3.5 or level > 17 and 3 or level > 11 and 2.5 or level > 5 and 2 or 1.5
-            return ( base - ( glyph.fireball.enabled and 0.15 or 0 ) - 0.1 * talent.improved_fireball.rank ) * haste
+            return base * haste
         end,
         cooldown = 0,
         gcd = "spell",
@@ -1505,11 +1495,11 @@ spec:RegisterAbilities( {
     -- Launches a bolt of frost at the enemy, causing ${$m2*$<mult>} to ${$M2*$<mult>} Frost damage and slowing movement speed by $s1% for $d.
     frostbolt = {
         id = 116,
-        cast = function() return buff.presence_of_mind.up and 0 or 1.5 - ( 0.1 * ( talent.improved_frostbolt.rank + talent.empowered_frostbolt.rank ) ) end,
+        cast = function() return buff.presence_of_mind.up and 0 or 2 - ( 0.3 * talent.early_frost.rank ) end,
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.110 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.110 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
@@ -1521,7 +1511,6 @@ spec:RegisterAbilities( {
         end,
 
         impact = function()
-            if buff.fingers_of_frost.up then removeStack( "fingers_of_frost" ) end
             applyDebuff( "target", "frostbolt" )
         end,
         copy = { 116, 205, 837, 7322, 8406, 8407, 8408, 10179, 10180, 10181, 25304, 27071, 27072, 38697, 42841, 42842 },
@@ -1714,8 +1703,6 @@ spec:RegisterAbilities( {
                 applyBuff( "invisibility" )
                 buff.invisibility.applied = buff.invisibility_fading.expires
             end
-
-        
         end,
 
        
@@ -1735,7 +1722,6 @@ spec:RegisterAbilities( {
 
         handler = function()
             applyDebuff( "target", "living_bomb" )
-
          end,
 
         
@@ -1769,7 +1755,7 @@ spec:RegisterAbilities( {
     mage_ward = {
         id = 543,
         cast = 0,
-        cooldown = 0,
+        cooldown = 30,
         gcd = "spell",
 
         spend = 0.16,
@@ -1786,7 +1772,7 @@ spec:RegisterAbilities( {
     mana_shield = {
         id = 1463,
         cast = 0,
-        cooldown = 0,
+        cooldown = 12,
         gcd = "spell",
 
         spend = 0.070,
@@ -1883,7 +1869,6 @@ spec:RegisterAbilities( {
 
         handler = function()
             applyBuff( "presence_of_mind" )
-
         end,
 
     },
@@ -1891,7 +1876,15 @@ spec:RegisterAbilities( {
     -- Hurls an immense fiery boulder that causes $s1 Fire damage and an additional $o2 Fire damage over $d.
     pyroblast = {
         id = 11366,
-        cast = function() return buff.presence_of_mind.up and 0 or 5 - ( talent.fiery_payback.enabled and health.pct < 35 and ( 1.75 * buff.fiery_payback.rank ) or 0 ) end,
+        cast = function()
+            if buff.presence_of_mind.up then
+                return 0
+            elseif buff.hot_streak.up then
+                return 0
+            else
+                return 3.5
+            end
+        end,
         cooldown = function() return ( talent.fiery_payback.enabled and health.pct < 35 and ( 2.5 * buff.fiery_payback.rank ) or 0 ) end,
         gcd = "spell",
 
@@ -1906,14 +1899,14 @@ spec:RegisterAbilities( {
             elseif buff.hot_streak.up then removeBuff( "hot_streak" ) end
             if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
             if talent.critical_mass.rank == 3 then
-                            applyDebuff( "target", "critical_mass" )
+               applyDebuff( "target", "critical_mass" )
             end
         end,
 
         impact = function()
             applyDebuff( "target", "pyroblast" )
-
         end,
+        copy = { 11366, 92315 }
     },
 
     -- Removes $m1 Curse from a friendly target.
@@ -2001,7 +1994,7 @@ spec:RegisterAbilities( {
         cooldown = 0,
         gcd = "spell",
 
-        spend = function() return buff.clearcasting.up and 0 or 0.080 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
+        spend = function() return buff.clearcasting.up and 0 or 0.080 * ( buff.arcane_power.up and 1.1 or 1 ) end,
         spendType = "mana",
 
         startsCombat = true,
