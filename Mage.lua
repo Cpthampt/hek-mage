@@ -297,7 +297,7 @@ spec:RegisterAuras( {
         duration = 8,
         tick_time = 2,
         max_stack = 1,
-        copy = { 2120, 2121, 8422, 8423, 10215, 10216, 27086, 42925, 42926 },
+        copy = { 2120, 88148 },
 },
     -- Increases chance to critically hit with spells by $s1%.
     focus_magic = {
@@ -663,7 +663,8 @@ local heating_spells = {
 }
 local heatingUp = false
 local igniteDamage = 0
-local lastTickTime = 0 -- Store the time of the last damage tick
+local lastTickTime = 0
+local fs_down = false
 
 -- Function to reset igniteDamage after a delay
 local function ResetIgniteDamage()
@@ -676,52 +677,403 @@ local function ResetIgniteDamage()
         C_Timer.After(0.1, ResetIgniteDamage)
     end
 end
+-- Initialize ignite and combustion tables
+local ignite = {}
+local combustion = {}
 
-spec:RegisterCombatLogEvent( function( _, subtype, _, sourceGUID, sourceName, _, _, destGUID, destName, destFlags, _, spellID, spellName, _, amount, ...)
-    --print("Spell Name: ", spellName)
-    --print("Spell ID: ", spellID)
-    --print("Subtype :", subtype)
-    --print("Damage: ", amount)
-    if not ( sourceGUID == state.GUID or destGUID == state.GUID ) then
-        return
+-- Allowed Spell IDs
+local allowedSpellIds = {
+    [133] = true,    -- Fireball
+    [44614] = true,  -- Frostfire Bolt
+    [2948] = true,   -- Scorch
+    [2136] = true,   -- Fireblast
+    [11366] = true,  -- Pyroblast
+    [92315] = true,  -- Instant Pyroblast
+    [31661] = true,  -- Dragon's Breath
+    [2120] = true,   -- Flamestrike
+    [11113] = true,  -- Blast Wave
+    [88148] = true,  -- Flamestrike from BW
+    [44461] = false, -- Living Bomb Explosion
+    [11129] = true   -- Combustion Initial
+}
+
+-- Function to calculate remaining cooldown of Combustion
+local function CombustionCooldown()
+    local startTime, cooldown = GetSpellCooldown(11129)
+    local currentTime = GetTime()
+    local remainingCooldown = math.max(0, cooldown - (currentTime - startTime))
+    --print("Debug: Combustion Cooldown:", remainingCooldown)
+    return remainingCooldown
+end
+
+-- Function to calculate haste considering Berserking racial ability
+local function CalculateBerserkingHaste(haste)
+    local _, cooldown = GetSpellCooldown(26297)
+    local _, raceEn = UnitRace("player")
+    if raceEn == "Troll" and cooldown == 0 then
+        haste = (((((haste / 100) + 1) * 1.2) - 1) * 100)
+    end
+    --print("Debug: Calculated Berserking Haste:", haste)
+    return haste
+end
+
+-- Function to calculate combustion ticks based on haste breakpoints
+local function CalculateTicks()
+    local haste = UnitSpellHaste("player")
+    local ticks = 0
+    local berserkEnabled = true -- Set this based on your custom addon configuration
+    if berserkEnabled then
+        haste = CalculateBerserkingHaste(haste)
     end
 
-	if (sourceGUID == state.GUID) then
-        if subtype == 'SPELL_DAMAGE' then
-            if state.talent.hot_streak.enabled and heating_spells[spellID] == 1 then
-                local critical = select(7, ...)
-                if critical then
-                    heatingUp = true
-                else
-                    heatingUp = false
-                end
+    for i = 10, 40 do
+        local tickspeed = 1000 / (1000 / (10000 / (i - 0.5)))
+        local adjusted_tickspeed = (i % 2 == 0) and (math.floor(tickspeed) - 0.5001) or (math.floor(tickspeed) + 0.4999)
+        local breakpoint = 1000 / adjusted_tickspeed
+        local adjusted_haste = (haste / 100) + 1
+        if adjusted_haste > breakpoint then
+            ticks = i
+        else
+            break
+        end
+    end
+    --print("Debug: Calculated Ticks:", ticks)
+    return ticks
+end
+
+-- Functions to calculate contributions
+local function CalculateLivingBombContrib(spellpower, floorMastery)
+    return math.ceil((math.floor(0.25 * 937.3) + 0.258 * spellpower) * 1.25 * 1.03 * floorMastery * 1.15 / 3)
+end
+
+local function CalculatePyroblastContrib(spellpower, floorMastery)
+    return math.ceil((math.floor(0.175 * 973.3) + 0.180 * spellpower) * 1.25 * 1.03 * floorMastery / 3)
+end
+
+
+-- Function to calculate Ignite contribution
+local function IgniteContrib(floorMastery, mastery, ignite)
+    if ignite then
+        local total_amount = ignite.total_amount
+        --ignite.total_amount_no_combustion or
+
+        -- Debugging: Print before calculation
+        --print("Debug: Ignite Contribution Calculation - Total Amount:", total_amount, "Ticks Remaining:", ignite.ticks_remaining)
+
+        if total_amount then
+            local contrib = math.ceil((total_amount / ignite.ticks_remaining) / 2 * floorMastery / mastery)
+
+            -- Debugging: Print the calculated contribution
+            --print("Debug: Ignite Contribution:", contrib, "Total Amount:", total_amount)
+            return contrib
+        else
+            --print("Debug: Ignite Total Amount is nil during contribution calculation")
+        end
+    return 0
+    else
+        --print("Debug: No Ignite Found")
+    end
+
+end
+
+local function CalculatePredictedCombustion()
+    local spellpower = GetSpellBonusDamage(3)
+    local mastery = GetMastery() * 2.8 / 100 + 1
+    local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
+
+    local targetGuid = UnitGUID("target")
+
+    local igniteEntry = ignite[targetGuid]
+    if igniteEntry then
+        --print("Debug: Ignite Entry for GUID:", targetGuid)
+        --print(" - total_amount:", igniteEntry.total_amount or "nil")
+        --print(" - ticks_remaining:", igniteEntry.ticks_remaining or "nil")
+        --print(" - total_amount_no_combustion:", igniteEntry.total_amount_no_combustion or "nil")
+    else
+        --print("Debug: Ignite Entry is nil for GUID:", targetGuid)
+    end
+    local igniteContrib = 0
+
+    local livingBombContrib = 0
+    local pyroblastContrib = 0
+    local critPresent = 0
+
+    for i = 1, 40 do
+        local name, _, _, _, _, _, unitCaster, _, _, spellId = UnitDebuff("target", i)
+        if not name then break end
+        if unitCaster == "player" then
+        --print("Debug: Beginning contributions")
+            if spellId == 44457 then  -- Living Bomb
+                livingBombContrib = CalculateLivingBombContrib(spellpower, floorMastery)
+                --print("Debug: livingBombContrib:", livingBombContrib)
+            elseif spellId == 11366 or spellId == 92315 then  -- Pyroblast
+                pyroblastContrib = CalculatePyroblastContrib(spellpower, floorMastery)
+                --print("Debug: pyroblastContrib:", pyroblastContrib)
+            elseif spellId == 413841 or spellId == 12654 then  -- Ignite
+                --print(igniteEntry.total_amount)
+                igniteContrib = IgniteContrib(floorMastery, mastery, igniteEntry) or 0
+                --print("Debug: igniteContrib:", igniteContrib)
             end
-            if spellID == 413843 then
-               igniteDamage = amount
-            end
-        elseif subtype == 'SPELL_AURA_APPLIED' then
-            if state.talent.hot_streak.enabled and spellID == spec.auras.hot_streak.id then
-                heatingUp = false
-            end
-        elseif subtype == 'SPELL_AURA_REMOVED' then
-            if spellID == 413841 then
-               C_Timer.After(0.1, ResetIgniteDamage)
-            end
+        end
+        if spellId == 22959 or spellId == 17800 then  -- Critical debuffs
+            critPresent = 5
         end
     end
 
-    if AURA_REMOVED[ subtype ] and spellID == spec.auras.fingers_of_frost.id then
+    local ticks = CalculateTicks()
+    local tickDamage = livingBombContrib + pyroblastContrib + igniteContrib
+    --print("livingBombContrib ", livingBombContrib, " + pyroblastContrib ", pyroblastContrib," + igniteContrib ", igniteContrib )
+    local totalCombustionDamage = tickDamage * ticks
+
+    if critPresent ~= 0 then
+        totalCombustionDamage = totalCombustionDamage * (((GetSpellCritChance(3) + critPresent) / 100) + 1)
+    end
+
+    --print("Debug: Predicted Combustion - Tick Damage:", tickDamage, "Total Damage:", totalCombustionDamage)
+
+    return totalCombustionDamage
+end
+
+-- Function to update Ignite table with critical hit damage
+local function IgniteSpellcritUpdate(destGuid, amount, spellId)
+    -- Ensure the ignite entry exists or create a new one with default ticks remaining
+    local igniteEntry = ignite[destGuid] or { ticks_remaining = 2 }
+
+    -- Debugging: Check and print if the entry was newly created
+    local isNewEntry = ignite[destGuid] == nil
+    --print("Debug: Ignite Entry for GUID:", destGuid, "is new:", isNewEntry)
+
+    -- Update ticks_remaining if Combustion is applied
+    igniteEntry.ticks_remaining = spellId == 11129 and 3 or igniteEntry.ticks_remaining
+
+    -- Calculate mastery contribution
+    local mastery = GetMastery() * 2.8 / 100 + 1
+    local total = amount * 0.4 * mastery
+
+    -- Debugging: Print before updating
+    --print("Debug: Before Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Total Amount No Combustion:", igniteEntry.total_amount_no_combustion)
+
+    -- Update or initialize total_amount
+    if igniteEntry.total_amount then
+        if spellId == 11129 then
+            igniteEntry.total_amount_no_combustion = igniteEntry.total_amount
+        end
+        igniteEntry.total_amount = igniteEntry.total_amount + total
+    else
+        igniteEntry.total_amount = total
+    end
+
+    -- Debugging: Print after updating
+    --print("Debug: After Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+
+    -- Store the updated entry back into the ignite table
+    ignite[destGuid] = igniteEntry
+
+    -- Debugging: Verify and print the final stored ignite entry
+    --print("Debug: Final Ignite Entry - GUID:", destGuid, "Stored Total Amount:", ignite[destGuid].total_amount, "Stored Ticks Remaining:", ignite[destGuid].ticks_remaining)
+
+    return igniteEntry
+end
+
+
+-- Function to handle Ignite ticks
+local function IgniteTickUpdate(destGuid)
+    local igniteEntry = ignite[destGuid]
+    if igniteEntry then
+        --print("Debug: Ignite Tick Update - Initial State for GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+
+        -- Ensure igniteEntry is valid before performing tick updates
+        if igniteEntry.total_amount and igniteEntry.ticks_remaining and igniteEntry.ticks_remaining > 0 then
+            local tick_damage = igniteEntry.total_amount / igniteEntry.ticks_remaining
+            igniteEntry.total_amount = igniteEntry.total_amount - tick_damage
+            igniteEntry.ticks_remaining = igniteEntry.ticks_remaining - 1
+
+            if igniteEntry.ticks_remaining > 0 and igniteEntry.total_amount > 0 then
+                ignite[destGuid] = igniteEntry
+            else
+                ignite[destGuid] = nil
+            end
+
+            --print("Debug: Ignite Tick Update - Updated State for GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+        else
+            --print("Debug: Ignite Entry Invalid for Tick Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+            ignite[destGuid] = nil
+        end
+
+        return igniteEntry
+    else
+        --print("Debug: No Ignite Entry for GUID:", destGuid, "to update ticks")
+    end
+end
+
+-- Function to handle Ignite impact spread
+local function IgniteImpactSpread(destGuid, time)
+    if destGuid ~= ignite.impact_destGuid and time - ignite.impact_time < 0.1 then
+        ignite[destGuid] = {
+            total_amount = ignite.impact_amount,
+            ticks_remaining = 2
+        }
+        --print("Debug: Ignite Impact Spread to GUID:", destGuid, "Total Amount:", ignite.impact_amount)
+    end
+end
+
+-- Register state expression for predicted combustion
+spec:RegisterStateExpr("predicted_combustion", function()
+    return CalculatePredictedCombustion()
+end)
+
+spec:RegisterCombatLogEvent(function(...)
+    local timestamp, subtype, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
+          destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool,
+          amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing = ...
+
+    -- Initialize ignite entry if not already set
+    if not ignite[destGUID] then
+        ignite[destGUID] = { ticks_remaining = 2, total_amount = 0, total_amount_no_combustion = 0 }
+        --print("Debug: Initialized Ignite Entry for GUID:", destGUID)
+    end
+
+    -- Debugging: Print incoming event details
+    --print("Debug: Event Type:", subtype, "Spell ID:", spellID, "Amount:", amount, "Critical:", critical)
+
+    if sourceGUID == state.GUID then
+        if subtype == 'SPELL_DAMAGE' and allowedSpellIds[spellID] then
+            if critical then
+                -- Handle critical damage for Ignite
+                local mastery = GetMastery() * 2.8 / 100 + 1
+                local baseIgnite = amount * 0.4
+                local finalIgnite = baseIgnite * mastery
+
+                -- Update ignite entry
+                local igniteEntry = ignite[destGUID]
+                igniteEntry.ticks_remaining = (spellID == 11129) and 3 or igniteEntry.ticks_remaining
+                igniteEntry.total_amount = igniteEntry.total_amount + finalIgnite
+
+                -- Handle special case for Combustion
+                if spellID == 11129 then
+                    igniteEntry.total_amount_no_combustion = igniteEntry.total_amount
+                end
+
+                -- Debugging: Print ignite entry details
+                --print("Debug: Updated Ignite Entry for GUID:", destGUID, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+            end
+
+        elseif subtype == 'SPELL_AURA_APPLIED' then
+            -- Handle Flamestrike DOT tracking
+            if spellID == 88148 or spellID == 2120 then
+                local countdown = 8
+                local delay = 1
+                fs_down = true
+                local timer
+                timer = C_Timer.NewTicker(delay, function()
+                    if countdown > 0 then
+                        countdown = countdown - 1
+                        fs_down = true
+                    else
+                        timer:Cancel()
+                        fs_down = false
+                    end
+                end, 9)
+            end
+
+        elseif subtype == 'SPELL_AURA_REMOVED' then
+            if spellID == 413841 then
+                -- Handle removal of specific aura
+                C_Timer.After(0.1, function()
+                    -- Reset Ignite damage if needed
+                    --print("Debug: Resetting Ignite Damage for GUID:", destGUID)
+                    ignite[destGUID] = nil
+                end)
+            end
+
+        elseif subtype == 'SPELL_CAST_SUCCESS' and spellID == 2120 then
+            -- Handle successful cast of Flamestrike
+            local countdown = 8
+            local delay = 1
+            fs_down = true
+            local timer
+            timer = C_Timer.NewTicker(delay, function()
+                if countdown > 0 then
+                    countdown = countdown - 1
+                    fs_down = true
+                else
+                    timer:Cancel()
+                    fs_down = false
+                end
+            end, 9)
+        end
+
+        -- Calculate and print Combustion damage if requested
+        if spellID == 11129 then
+            local spellpower = GetSpellBonusDamage(3)
+            local mastery = GetMastery() * 2.8 / 100 + 1
+            local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
+
+            local igniteEntry = ignite[destGUID]
+            local igniteContrib = igniteEntry and math.ceil((igniteEntry.total_amount / igniteEntry.ticks_remaining) / 2 * floorMastery / mastery) or 0
+
+            local livingBombContrib = 0 -- Placeholder for actual calculation
+            local pyroblastContrib = 0 -- Placeholder for actual calculation
+
+            local ticks = CalculateTicks()
+            local combustionTickDamage = livingBombContrib + pyroblastContrib + igniteContrib
+            local combustionTotalDamage = combustionTickDamage * ticks
+
+            -- Debugging: Print combustion damage details
+            --print("Debug: Combustion Tick Damage:", combustionTickDamage)
+            --print("Debug: Combustion Total Damage:", combustionTotalDamage)
+        end
+    end
+
+    -- Handle other events such as SPELL_AURA_REMOVED and forced updates
+    if AURA_REMOVED[subtype] and spellID == spec.auras.fingers_of_frost.id then
         lastFingersConsumed = GetTime()
     end
 
-    if sourceGUID == state.GUID and subtype == "SPELL_CAST_SUCCESS" and spec.abilities[ spellID ] and spec.abilities[ spellID ].key == "frostbolt" then
+    if sourceGUID == state.GUID and subtype == "SPELL_CAST_SUCCESS" and spec.abilities[spellID] and spec.abilities[spellID].key == "frostbolt" then
         lastFrostboltCast = GetTime()
     end
-    
-    if AURA_EVENTS[ subtype ] and FORCED_RESETS[ spellID ] then
-        Hekili:ForceUpdate( "MAGE_AURA_CHANGED", true )
+
+    if AURA_EVENTS[subtype] and FORCED_RESETS[spellID] then
+        Hekili:ForceUpdate("MAGE_AURA_CHANGED", true)
     end
-end, false )
+end, false)
+
+-- Register state expressions to expose Ignite data
+spec:RegisterStateExpr("ignite_total_amount", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.total_amount then
+        return igniteEntry.total_amount
+    else
+        return 0
+    end
+end)
+
+spec:RegisterStateExpr("ignite_ticks_remaining", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.ticks_remaining then
+        return igniteEntry.ticks_remaining
+    else
+        return 0
+    end
+end)
+
+spec:RegisterStateExpr("ignite_total_amount_no_combustion", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.total_amount_no_combustion then
+        return igniteEntry.total_amount_no_combustion
+    else
+        return 0
+    end
+end)
+
+
 
 
 local mana_gem_values = {
@@ -1263,7 +1615,7 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-
+            removeBuff("impact")
         end,
 
 
@@ -1369,7 +1721,7 @@ spec:RegisterAbilities( {
     flamestrike = {
         id = 2120,
         cast = function() return ( buff.firestarter.up or buff.presence_of_mind.up ) and 0 or 2 * haste end,
-        cooldown = 0,
+        cooldown = 8,
         gcd = "spell",
 
         spend = function() return ( buff.firestarter.up or buff.clearcasting.up ) and 0 or 0.300 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
@@ -1378,12 +1730,9 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-            if buff.firestarter.up then
-                removeBuff( "firestarter" )
-            else
-                if buff.clearcasting.up then removeBuff( "clearcasting" ) end
-                if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
-            end
+            if buff.clearcasting.up then removeBuff( "clearcasting" ) end
+            if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
+            applyDebuff( "target", "flamestrike" )
         end,
 
         
@@ -2092,6 +2441,8 @@ spec:RegisterAbilities( {
     }
 } )
 
+spec:RegisterStateExpr( "is_fs_down", function() return fs_down end )
+
 
 spec:RegisterOptions( {
     enabled = true,
@@ -2145,6 +2496,21 @@ spec:RegisterSetting( "living_bomb_cap", 3, {
 
 spec:RegisterStateExpr( "living_bomb_cap", function()
     return settings.living_bomb_cap or 3
+end )
+
+spec:RegisterSetting( "minimum_combustion", 200000, {
+    type = "range",
+    name = strformat( "Targeted Minimum Combustion Amount: ", Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
+    desc = strformat( "Set a minimum amount for a combustion",
+        Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
+    width = "full",
+    min = 1,
+    max = 750000,
+    step = 1
+} )
+
+spec:RegisterStateExpr( "minimum_combustion", function()
+    return settings.minimum_combustion or 200000
 end )
 
 
