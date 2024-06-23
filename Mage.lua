@@ -757,13 +757,13 @@ local function IgniteContrib(floorMastery, mastery, ignite)
         local total_amount = ignite.total_amount
         --ignite.total_amount_no_combustion or
 
-        -- Debugging: Print before calculation
+        -- Debugging:--print before calculation
         --print("Debug: Ignite Contribution Calculation - Total Amount:", total_amount, "Ticks Remaining:", ignite.ticks_remaining)
 
         if total_amount then
             local contrib = math.ceil((total_amount / ignite.ticks_remaining) / 2 * floorMastery / mastery)
 
-            -- Debugging: Print the calculated contribution
+            -- Debugging:--print the calculated contribution
             --print("Debug: Ignite Contribution:", contrib, "Total Amount:", total_amount)
             return contrib
         else
@@ -859,7 +859,7 @@ local function IgniteSpellcritUpdate(destGuid, amount, spellId)
     local mastery = GetMastery() * 2.8 / 100 + 1
     local total = amount * 0.4 * mastery
 
-    -- Debugging: Print before updating
+    -- Debugging:--print before updating
     --print("Debug: Before Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Total Amount No Combustion:", igniteEntry.total_amount_no_combustion)
 
     -- Update or initialize total_amount
@@ -873,13 +873,13 @@ local function IgniteSpellcritUpdate(destGuid, amount, spellId)
     end
 
 
-    -- Debugging: Print after updating
+    -- Debugging:--print after updating
     --print("Debug: After Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
 
     -- Store the updated entry back into the ignite table
     ignite[destGuid] = igniteEntry
 
-    -- Debugging: Verify and print the final stored ignite entry
+    -- Debugging: Verify and--print the final stored ignite entry
     --print("Debug: Final Ignite Entry - GUID:", destGuid, "Stored Total Amount:", ignite[destGuid].total_amount, "Stored Ticks Remaining:", ignite[destGuid].ticks_remaining)
 
     return igniteEntry
@@ -899,7 +899,7 @@ local function IgniteTickUpdate(destGuid)
             igniteEntry.total_amount = igniteEntry.total_amount - tick_damage
             igniteEntry.ticks_remaining = igniteEntry.ticks_remaining - 1
 
-            -- Print debug information for each tick
+            ----print debug information for each tick
             --print("Debug: Ignite Tick - GUID:", destGuid, "Tick Damage:", tick_damage, "Remaining Ignite Bank:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
 
             -- Update or remove the entry based on remaining ticks and total amount
@@ -934,19 +934,174 @@ spec:RegisterStateExpr("predicted_combustion", function()
     return CalculatePredictedCombustion()
 end)
 
+local lastMana = UnitPower("player", Enum.PowerType.Mana)
+local inactive, active = GetManaRegen()
+local avgManaGained = 0
+local avgManaSpent = 0
+local totalManaGained = 0
+local totalManaSpent = 0
+local difference = (avgManaSpent - avgManaGained) + active
+local timeToOOM = lastMana / difference
+local combatStart = 0
+local inCombat = false
+local currentRotation = "DPS" -- Initialize as DPS rotation
+
+-- Function to update the current rotation based on mana and cooldown status
+local function updateRotation()
+    local currentMana = UnitPower("player", Enum.PowerType.Mana)
+    local maxMana = UnitPowerMax("player", Enum.PowerType.Mana)
+    local manaPercentage = currentMana / maxMana * 100
+
+    local evocationCooldown = GetSpellCooldown("Evocation") -- Replace with the actual Evocation spell ID
+    local timeToDie = state.my_ttd -- Use your TTD function
+    local regenRate = avgManaGained
+
+    -- Check if we should switch to DPM rotation
+    if currentRotation == "DPS" then
+        if evocationCooldown < timeToDie then
+            if manaPercentage < 35 then -- Adjust percentage as needed
+               --print("Switching to DPM spell rotation")
+                currentRotation = "DPM"
+            end
+        else
+            if currentMana < 6200 then
+               --print("Switching to DPM spell rotation")
+                currentRotation = "DPM"
+            end
+        end
+    else -- Currently in DPM
+        local consumptionRate = avgManaSpent - regenRate
+        if consumptionRate > 0 then
+            local availableMana = currentMana
+            if state.mana_gem_charges > 0 then
+                availableMana = availableMana + 16856 -- Implement this function
+            end
+            local targetTime, targetPct
+            if timeToDie < evocationCooldown + 20 then -- Adjust time and percentage as needed
+                targetTime = timeToDie
+                targetPct = 0
+            else
+                targetTime = evocationCooldown
+                targetPct = 35 / 100.0
+            end
+            local expectedTime = (availableMana - targetPct * maxMana) / consumptionRate
+            if expectedTime >= targetTime then
+               --print("Switching to DPS spell rotation")
+                currentRotation = "DPS"
+            end
+        else
+           --print("Switching to DPS spell rotation")
+            currentRotation = "DPS"
+        end
+    end
+end
+
+-- Event handler for entering combat
+spec:RegisterEvent("PLAYER_REGEN_DISABLED", function(event)
+    combatStart = GetTime()
+    inCombat = true
+    totalManaGained = 0
+    totalManaSpent = 0
+    avgManaGained = 0
+    avgManaSpent = 0
+    currentRotation = "DPS" -- Start with DPS rotation
+end)
+
+-- Event handler for leaving combat
+spec:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+    combatStart = 0
+    inCombat = false
+    totalManaGained = 0
+    totalManaSpent = 0
+    avgManaGained = 0
+    avgManaSpent = 0
+    currentRotation = "DPS" -- Reset to DPS rotation
+end)
+
+-- Function to calculate mana gem value (Placeholder)
+local function CalculateManaGemValue()
+    -- Implement logic to return the amount of mana restored by a Mana Gem
+    return 16856 -- Replace with the correct value or calculation
+end
+
+-- Function to log current mana and rotation state for debugging
+local function logManaAndRotation()
+   --print("Current Mana: " .. UnitPower("player", Enum.PowerType.Mana))
+   --print("Mana Regeneration Rate: " .. avgManaGained)
+   --print("Mana Consumption Rate: " .. avgManaSpent)
+   --print("Current Rotation: " .. currentRotation)
+   --print("Time to OOM: " .. timeToOOM)
+end
+
+-- Timer to periodically update the rotation during combat
+local updateInterval = 1.0 -- Update rotation every second
+local rotationUpdateTimer = C_Timer.NewTicker(updateInterval, function()
+    if inCombat then
+        updateRotation()
+        logManaAndRotation()
+    end
+end)
+
 spec:RegisterCombatLogEvent(function(...)
     local timestamp, subtype, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
           destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool,
           amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing = ...
+    local inCombat = UnitAffectingCombat("player")
 
     if not ignite[destGUID] then
         ignite[destGUID] = { ticks_remaining = 2, total_amount = 0, total_amount_no_combustion = 0 }
         --print("Debug: Initialized Ignite Entry for GUID:", destGUID)
     end
 
-    -- Debugging: Print incoming event details
+    -- Debugging:--print incoming event details
     --print("Debug: Event Type:", subtype, "Spell ID:", spellID, "Amount:", amount, "Critical:", critical)
+    if inCombat == true then
+		--print("combat")
+        if (subtype == "SPELL_PERIODIC_ENERGIZE" or subtype == "SPELL_ENERGIZE") and sourceGUID == state.GUID then
+            totalManaGained = totalManaGained + amount
+            --print(totalManaGained .. " + " .. amount)
+        end
 
+        combatTime = GetTime() - combatStart
+        --print(combatTime)
+
+        if combatTime > 0 then
+            local averageManaPerSecond = totalManaGained / combatTime
+            local formattedAverage = string.format("%.2f", averageManaPerSecond)
+			--print(combatTime)
+            --print("Total Mana Gained: " .. totalManaGained .. "\nAverage Mana Per Second: " .. formattedAverage)
+            avgManaGained = formattedAverage
+        else
+            --print("Total Mana Gained: " .. totalManaGained .. "\nAverage Mana Per Second: 0.00")
+        end
+    end
+
+
+    if inCombat == true then
+        if subtype == "SPELL_CAST_SUCCESS" and sourceGUID == state.GUID then
+            spellCost = GetSpellPowerCost(spellID)
+			--print(spellCost)
+            for _, spellCost in pairs(spellCost) do
+                totalManaSpent = totalManaSpent + spellCost.cost
+            end
+        end
+
+        combatTime = GetTime() - combatStart
+        --print(aura_env.combatTime)
+
+        if combatTime > 0 then
+            local averageManaPerSecond = totalManaSpent / combatTime
+            local formattedAverage = string.format("%.2f", averageManaPerSecond)
+            --print("Total Mana Spent: " .. totalManaSpent .. "\nAverage Mana Spent Per Second: " .. formattedAverage)
+            avgManaSpent = formattedAverage
+			difference = (avgManaSpent - avgManaGained) + active
+			timeToOOM = lastMana / difference
+        else
+            --print("Total Mana Spent: " .. totalManaSpent .. "\nAverage Mana Spent Per Second: 0.00")
+			return ""
+        end
+    end
+    lastMana = UnitPower("player", Enum.PowerType.Mana)
     if sourceGUID == state.GUID then
         if subtype == 'SPELL_DAMAGE' then
             if spellID == 413841 or spellID == 413843 then
@@ -998,26 +1153,6 @@ spec:RegisterCombatLogEvent(function(...)
                 end
             end, 9)
         end
-
-        --if spellID == 11129 then
-        --    local spellpower = GetSpellBonusDamage(3)
-        --    local mastery = GetMastery() * 2.8 / 100 + 1
-        --    local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
-
-        --    local igniteEntry = ignite[destGUID]
-        --    local igniteContrib = igniteEntry and math.ceil((igniteEntry.total_amount / igniteEntry.ticks_remaining) / 2 * floorMastery / mastery) or 0
-
-        --    local livingBombContrib = 0 -- Placeholder for actual calculation
-        --    local pyroblastContrib = 0 -- Placeholder for actual calculation
-
-        --    local ticks = CalculateTicks()
-        --    local combustionTickDamage = livingBombContrib + pyroblastContrib + igniteContrib
-        --    local combustionTotalDamage = combustionTickDamage * ticks
-
-            -- Debugging: Print combustion damage details
-            --print("Debug: Combustion Tick Damage:", combustionTickDamage)
-            --print("Debug: Combustion Total Damage:", combustionTotalDamage)
-        --end
     end
 
     -- Handle other events such as SPELL_AURA_REMOVED and forced updates
@@ -1033,6 +1168,109 @@ spec:RegisterCombatLogEvent(function(...)
         Hekili:ForceUpdate("MAGE_AURA_CHANGED", true)
     end
 end, false)
+spec:RegisterStateExpr( "time_to_oom", function() return timeToOOM end )
+
+-- Declare static variables to retain their values across function calls
+local oldHealth = nil
+local initialHealth, initialTime = nil, nil
+local averageHealth, averageTime = nil, nil
+
+-- Declare static variables to retain their values across function calls
+local oldHealth = nil
+local initialHealth, initialTime = nil, nil
+local averageHealth, averageTime = nil, nil
+local lastCalculatedTTD = 300  -- Start with a default high value
+
+spec:RegisterStateExpr("my_ttd", function()
+    -- Get current target health and time
+    local health = UnitHealth("target")
+    local time = GetTime()
+
+    -- If there's no valid target or the target is dead, return 0
+    if not UnitExists("target") or UnitIsDead("target") then
+        --print("Debug: No valid target or target is dead. Returning 0.")
+        return 300
+    end
+
+    --print("Debug: Starting function execution")
+    --print("Debug: Current target health:", health)
+    --print("Debug: Current time:", time)
+    if health == UnitHealthMax("target") then
+        lastCalculatedTTD = 300
+        return 300
+    end
+    -- Check if health has changed
+    if oldHealth ~= health then
+        oldHealth = health
+        --print("Debug: Health changed, updating oldHealth to:", oldHealth)
+
+        -- If target health is at maximum, reset the calculation but don't return a new TTD
+        if health == UnitHealthMax("target") then
+            initialHealth, initialTime = nil, nil
+            averageHealth, averageTime = nil, nil
+            --print("Debug: Target health is at maximum, resetting variables")
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        end
+
+        -- Initialize on first valid health update
+        if not initialHealth then
+            initialHealth, initialTime = health, time
+            averageHealth, averageTime = health, time
+            --print("Debug: Initializing health and time values")
+            --print("Debug: initialHealth, initialTime set to:", initialHealth, initialTime)
+            --print("Debug: averageHealth, averageTime set to:", averageHealth, averageTime)
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        end
+
+        -- Update average health and time
+        averageHealth = (averageHealth + health) * 0.5
+        averageTime = (averageTime + time) * 0.5
+       --print("Debug: Updating average health and time")
+       --print("Debug: Before update - averageHealth:", averageHealth, "averageTime:", averageTime)
+
+        -- Check if average health is increasing (which indicates healing or stabilization)
+        if averageHealth >= initialHealth then
+            initialHealth, initialTime = nil, nil
+            averageHealth, averageTime = nil, nil
+           --print("Debug: Average health is greater than or equal to initial health, resetting variables")
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        else
+            -- Calculate time to die in seconds
+            local healthDropRate = (initialHealth - averageHealth)
+            local timeElapsed = (time - averageTime)
+            local timeToDie = health * timeElapsed / healthDropRate
+
+           --print("Debug: Calculating time to die")
+           --print("Debug: initialHealth:", initialHealth, "initialTime:", initialTime, "averageHealth:", averageHealth, "averageTime:", averageTime)
+           --print("Debug: Calculated TTD in seconds:", timeToDie)
+
+            lastCalculatedTTD = timeToDie  -- Store the calculated TTD
+            return timeToDie  -- Return the calculated time to die in seconds
+        end
+    else
+       --print("Debug: Health did not change, returning last calculated TTD:", lastCalculatedTTD)
+    end
+
+    return lastCalculatedTTD  -- Return the last valid TTD if health has not changed
+end)
+local function get_evocation_cooldown()
+    local start, duration, enabled = GetSpellCooldown(12051)  -- Spell ID for Evocation
+    if enabled == 0 then
+        return 0  -- If Evocation is not on cooldown, return 0
+    else
+        local remaining = (start + duration) - GetTime()
+        if remaining < 0 then remaining = 0 end  -- Ensure no negative values
+        return remaining
+    end
+end
+
+
+-- Register Hekili state expression to reflect the current rotation choice
+spec:RegisterStateExpr("current_rotation", function()
+    return currentRotation
+end)
+
+
 
 -- Register state expressions to expose Ignite data
 spec:RegisterStateExpr("ignite_total_amount", function()
@@ -2541,7 +2779,7 @@ spec:RegisterStateExpr( "use_cold_snap", function()
 end )
 
 
-spec:RegisterPackSelector( "arcane", "Arcane Wowhead", "|T135932:0|t Arcane",
+spec:RegisterPackSelector( "arcane", "Arcane Experimental WoW Sims", "|T135932:0|t Arcane",
     "If you have spent more points in |W|T135932:0|t Arcane|w than in any other tree, this priority will be automatically selected for you.",
     function( tab1, tab2, tab3 )
         return tab1 > max( tab2, tab3 )
@@ -2563,3 +2801,4 @@ spec:RegisterPackSelector( "frost", "Frost Wowhead", "|T135846:0|t Frost",
 --spec:RegisterPack( "Fire WoW Sims", 20240617, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
 -- spec:RegisterPack( "Frost Wowhead", 20230930, [[Hekili:fJ1FpsTnq0plOkT3Du2S)4G7a0DivkQTGApv1qf9VsI3Kj76Eo2bBNBzpDkF27yNnjoztwOuHQqcYAp(nppEM5ztWIG3h4Nq0qWnlNV885V485ElE6Y5p95b(6D5qGFoj(wYA8dojd)7Fsku6YOpi2UbijMP3Xe4himkrHmgnzJwNRE5SzB3U1BBLDEXISzBfA2TZwxqtGzXmIsbQzzi0Zsnyoljxnvk0envWNgleSeXwUAkzfLr1uqnn)oe8vfuM(T8Gvdt7lrAKdXb3G8FdnjbQSeuXb()g6RxwgvTdENllPX7MEhq5QwEo1YqACf5MA45uddrsCuww(oFixdzRazzKHByisksPmK7FxzuxoGd8nJgi29ys57WrXH)DjG4VIGeGeBaq5Lxp03F9mImMWHWvskJrj8y4j00RLeAYKvfPPEhmTNX1hfkkxdmgeRni9OphuDMRzPhXlXc(FxiHWmcNeUgYmEP(7W4ne5AqD1YHxBMGPbEirMjKM1z9DbN(XcOAWJ4xvrwMGhUftdLHadYaUMWS7XCq7zwYDWK1SD5B8a0goHvzShWjRyqYWWMkIlu4Mznn2G1APOiFsfyHjcTNZ8xpFyiY3jfRWehBaFLqPQp6FdKskyTh82OxbgJLyvdJ5oUDaLgWDeJINeXjx3ouyDkxfS)yDcOlazuPuidPMC2oapEy7ljwHiG1jH26e3b3NWKl2I57oJNYW(wHXKC3bZfMVEsHccfPPHRXn3IUbfwsOItYn0YyvZavzNnmOkJToA4mUeYi4)(QlMBlf)tfugr47kJ0sk)wqRWV2GLGrejWpb)xHEdi3sn2z6GrtPqINlNm0GI1ZQwaFda5MMjaCp(lTOmcRfW4l(JDyZ4YitoaAaLVgpHrFKw36jQQUa9fndtiWiNOqXq6TLQ3GKAVDRWYdCzY9)mLkXL8ACWomlbPryQLfM41PjGniHTSUh4Ef5p8q1VRObgXdTDZ8uAuB56fNn50kS8sRDsOXXEuEykJUEJ(HhCnO7CN15WUE(MA5dCkwmHPByoNNdTBpbDgS(m8QymkgQPzWJpY(4aA0SpA4YkS1hVfC0E3fTIrV)EImXy((YDGdzyZ8xTCYJYe3HUTBok3K9AtnhCnAZjS2ZCIs5lMp5qi2xZaFkNjuMcIVoyQ2P19BQMV7YwoVZofW4PTd9NRo0mrtB9owv3K3lpwF1LDGhUteBfg7yZ5ZhmrjW)o8SehT9Meb(BjsoUhub(F4h(JBE7n)mkzxg9(nyYpnlxiXAIutrXjjv9tpPmscFSaddjyfLWu)rk0ImSbwITudtyuyjZVInslJwS8LMwMC0X25pzF(4FDsvnCZVR79HJF6IpDMNPl(BT(3SSLOtS7hSmNQ0g8d8r3Urid8)f4w8Mab(2zS3XRIP4N3yVZx1sd8DB)h4V3HbVoqJXdJDTJ0SKwzad(wPb3bB0gmyCURVCve65RN2ZxXsSvNKsc8Fuz0rKfCy1GYkgSFMlhA6q3Jax4AKRwsp7U01UgTLEg9CJroPRMyEZIQY57TIxm6(VJ6tz0KYObuGSJpUkuz0RkJUyU7P(Ean(EX8Eo3CDzjnVY0VsLRwF1OBz91IrsQC67oeb(FuPZ9W40YO(IBLrp8W(ZKregIUgR5lJoZEiDADv7OIDvaoUGhIKns2V8SLLJj8zjWHIFnxXQts0acHLrxHgulgwg94JUVDktAA2A495hN3hks2dOMqMfTXBC0viZwcS0UfXokvAuTaxR9AH8z)7HSNgPDS((WvV26Nl(24N(I6wFD5O(AVC(bOV0PDrRaVfSJ2ERV4EVgDlgVtxTuTnn7sh3lHCmNLQ2yX9axBKQ63cBeup3b1MRjybOJOOZTdCjV28w(9VYQriDGEzh8U2ED0o4)HGw2AECCBt(HFG8qAZD0l)sa5G57(s7d2mnt3OQpA029D32O(YofbDER(X1(h(14oxOW517nk9JfvAFtUDV)F8sfJx8AFWU1f7lJ79ODREGBXv7unxWy4Ob(qENRru)g)G2)e8pd]] )
 spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:nJ1xpoQnq8pl3lN2TvnfiB2CN028Wj1QRVKx4E2gd4eCJngzm7FKoXN9o2oHqsmqsKQuFy3aJhpZV5VEmOq0pqX5enfToki6PGNd)6SWLZF(P5Oy9hvuuCfjBhzl8qjra))VykABYF(EfvXe0snHBy5dUKKBevTSrLbSHItByC9FxIspt(lbMQOzO1FbfxWYZPowO1zO4FuWQBtm)rAt2R42e5g49mntw2MWz1Ay5nsvBY3P7yC2muSLOv7fsLgN3OigUXejfOU2AJ0sskNMJ(gk2jlu8goyryPkfPb0DGtTxEt5KAn(nYRudZZhN5CfzRSSgNQOeDHzdpn(gSiPwRy7SIFXeCdHaSfqO4mftdrcIXFVzZmMa8A6znvTjFUnjN6iUTeycicYtBC1BinC9bDmIIELasgiAFc7I)AiQJb3V15c05nWpb9bIz3VsX0sQGrHy1F0MeoIhE0ng1PcBOf8ryToFy8CbYhoyjRaHs1JbGv7bWO2EFG1M8RTjp8W5Y53a58yBYVdR5zPWh)fybUSCBNuaQ9f7Jp63YMiRsrR40swDbwqkj9nuZ7ZeK3TAY(swJsbvZwBomArqGnbktksj6Hsjt7lY((gNNlOhsAGIr7ZytTQRIDVt1tnlOVNh30esUMcmRes1fgwvME1tl(Sn3xaDqCS5Y)xV0VH0vNtv1u1ow52(I1SXVmv6RvFPCPmN3u3vdwPO5SmnnhBCMWc22yRC(w3R43y6cyzjpx(wz9rWCKfda(64UKEmpmOmkyCyjyLmrJaFQUddg3T5x5MCI2KxmnawA1QRteoNiSn2xzwjkyFY25DR6tKZEfcj4uqnNTs1hkPTx4b6olUlmUpSh6Rv3fjWtc2G7eSxckVKvubHvcTfEbQFMTyOmHqFTsVYOXQ)tSppbdlq9179kbk4ccxmeqxU4MXPfpt0XS3oaa9rgNI1e1wkmDbSlO7Y74tPgpF0EGHrw88jpasZYmHC76xCUdyHZT4DQjb6MGzmu48uNs(LoW5v5Tj)8NNVLvJVflENOTDVPO(FcG9DCWWtYD)G2LWmZ0PNvggCVgYvlgRXnWrweptDE)w2Ny14n14UtwUdR6QeH1IM4mq)tgFJg0PTuUQ60OboEC6wddRS7QNXahyenWG(3WThUbODBvH(cEgipXfYU1lbD0HCyHlGZH7PmWfgotlfsngkEOKDWX2GSocTUtbTs7MoYPtfJCKHvQ3ZbdhMWSVVOBIdtzHvYtn5D3a19f9g22cn(OWmxDZvLDyICxfMtf9B6kKgdeTo4G2W7P8nFZ17IsbNMgKs48(y1OIjA9vNjvz2BMhD9TuS3EggCE)TIM((ZzYY)Pb2Ub94TuXjb4J3TYKPFlxYP3wN4driykfuhYe2pGJpjyTPxHjqn837t08grvcrHAZxYH0Olmi47eEoKQlK2DH(3p]] )
+spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:DszqpQnmqu4Fl9spMssi0fP2k12lBVWfVND8e7jlw4yhz7uesR8V9ABGfqlSL2Dfbd259(M5XeAj9jkraEKUQAw18zlQQkkxoFrtnL43nIuYiW3aphxOHH41v42a77woOXa7NGhsNyNYaIKskPZ7YsI9WKYhxUQ84fpLGAOtHc6pOeG7LgD89SwTJMTOLs4wPhTsiPq3uFFXHT7uGZx48rycSVfy1bwG9Ylb2WUwVxeyFjWQMfTyv17BxhADODJu)85MDUvzskMgdSpgy5n6ugJqnfbqy2QVHV1PY(kgAXrfQLU1TdGgUltthSyK7ZQVSjP(83VQWFB4W(LN0)d32GdWhBKvnV1Y6Cb1Cx5woy(BvvsUf)FYLbJpzTOoc3NIWf)lt(XI4c6JFF5S9je3yuP8Q41MtHfhaP2Tp1AoeKNFVlRsO(53h1EvCsO1y7oNZ099WDvIdsNtQq3TAAh3)qFB5DjAhyT5P0)HbOlJ9VgypK)Pw5SZC86XZjo8PdnArUzOdEDC)AGoeXRfSdg7Bk8tBDrcvV4EgOVGS9)t2cwDCcp2IPeNzYYX0QUjPY)lnnMBUrKNYlcm5xNi6rqjSimyOK1sHaZNsGooL80AzKN0liWo80WaZ0h)CgHal)uVaR3ydShXnsLSiZb9pd]])
