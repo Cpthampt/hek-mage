@@ -405,7 +405,7 @@ spec:RegisterAuras( {
     },
 
     -- Next Fire Blast stuns the target for $12355d.
-    impact = {
+    impact_stun = {
         id = 64343,
         duration = 10,
         max_stack = 1,
@@ -457,19 +457,8 @@ spec:RegisterAuras( {
 
         spend = 0.17,
         spendType = "mana",
-        duration = function() 
-            local description = GetSpellDescription(44457)
-            -- Pattern to match the duration value (number with optional decimal followed by " sec")
-            local duration = string.match(description, "(%d+%.%d+) sec")
-            if not duration then
-                duration = string.match(description, "(%d+) sec")
-            end
-            if duration then
-                return tonumber(duration) + .25
-            else
-                return nil -- Return nil if the duration is not found
-            end
-         end,
+        --usable = function() return debuff.living_bomb.down end,
+        duration = 12,
         tick_time = 3,
         max_stack = 1,
  },
@@ -798,7 +787,7 @@ local function CalculatePredictedCombustion()
 
     local livingBombContrib = 0
     local pyroblastContrib = 0
-    local critPresent = 0
+    local critPresent = false
 
     for i = 1, 40 do
         local name, _, _, _, _, _, unitCaster, _, _, spellId = UnitDebuff("target", i)
@@ -818,19 +807,25 @@ local function CalculatePredictedCombustion()
             end
         end
         if spellId == 22959 or spellId == 17800 then  -- Critical debuffs
-            critPresent = 5
+            critPresent = true
         end
     end
 
     local ticks = CalculateTicks()
     --print("Ticks : ", ticks)
     local tickDamage = livingBombContrib + pyroblastContrib + igniteContrib
+    local total = 0
+    if igniteEntry then
+        total = igniteContrib * igniteEntry.ticks_remaining
+    else
+        total = igniteContrib
+    end
     --print("livingBombContrib ", livingBombContrib, " + pyroblastContrib ", pyroblastContrib," + igniteContrib ", igniteContrib )
     --print("Tick damage : ")
     local totalCombustionDamage = tickDamage * ticks
 
-    if critPresent ~= 0 then
-        totalCombustionDamage = totalCombustionDamage * (((GetSpellCritChance(3)) / 100) + 1)
+    if critPresent == true then
+        totalCombustionDamage = totalCombustionDamage * (((GetSpellCritChance(3) + 5) / 100) + 1)
     end
 
     --print("Debug: Predicted Combustion - Tick Damage:", tickDamage, "Total Damage:", totalCombustionDamage)
@@ -946,56 +941,6 @@ local combatStart = 0
 local inCombat = false
 local currentRotation = "DPS" -- Initialize as DPS rotation
 
--- Function to update the current rotation based on mana and cooldown status
-local function updateRotation()
-    local currentMana = UnitPower("player", Enum.PowerType.Mana)
-    local maxMana = UnitPowerMax("player", Enum.PowerType.Mana)
-    local manaPercentage = currentMana / maxMana * 100
-
-    local evocationCooldown = GetSpellCooldown("Evocation") -- Replace with the actual Evocation spell ID
-    local timeToDie = state.my_ttd -- Use your TTD function
-    local regenRate = avgManaGained
-
-    -- Check if we should switch to DPM rotation
-    if currentRotation == "DPS" then
-        if evocationCooldown < timeToDie then
-            if manaPercentage < 35 then -- Adjust percentage as needed
-               --print("Switching to DPM spell rotation")
-                currentRotation = "DPM"
-            end
-        else
-            if currentMana < 6200 then
-               --print("Switching to DPM spell rotation")
-                currentRotation = "DPM"
-            end
-        end
-    else -- Currently in DPM
-        local consumptionRate = avgManaSpent - regenRate
-        if consumptionRate > 0 then
-            local availableMana = currentMana
-            if state.mana_gem_charges > 0 then
-                availableMana = availableMana + 16856 -- Implement this function
-            end
-            local targetTime, targetPct
-            if timeToDie < evocationCooldown + 20 then -- Adjust time and percentage as needed
-                targetTime = timeToDie
-                targetPct = 0
-            else
-                targetTime = evocationCooldown
-                targetPct = 35 / 100.0
-            end
-            local expectedTime = (availableMana - targetPct * maxMana) / consumptionRate
-            if expectedTime >= targetTime then
-               --print("Switching to DPS spell rotation")
-                currentRotation = "DPS"
-            end
-        else
-           --print("Switching to DPS spell rotation")
-            currentRotation = "DPS"
-        end
-    end
-end
-
 -- Event handler for entering combat
 spec:RegisterEvent("PLAYER_REGEN_DISABLED", function(event)
     combatStart = GetTime()
@@ -1018,30 +963,6 @@ spec:RegisterEvent("PLAYER_REGEN_ENABLED", function()
     currentRotation = "DPS" -- Reset to DPS rotation
 end)
 
--- Function to calculate mana gem value (Placeholder)
-local function CalculateManaGemValue()
-    -- Implement logic to return the amount of mana restored by a Mana Gem
-    return 16856 -- Replace with the correct value or calculation
-end
-
--- Function to log current mana and rotation state for debugging
-local function logManaAndRotation()
-   --print("Current Mana: " .. UnitPower("player", Enum.PowerType.Mana))
-   --print("Mana Regeneration Rate: " .. avgManaGained)
-   --print("Mana Consumption Rate: " .. avgManaSpent)
-   --print("Current Rotation: " .. currentRotation)
-   --print("Time to OOM: " .. timeToOOM)
-end
-
--- Timer to periodically update the rotation during combat
-local updateInterval = 1.0 -- Update rotation every second
-local rotationUpdateTimer = C_Timer.NewTicker(updateInterval, function()
-    if inCombat then
-        updateRotation()
-        logManaAndRotation()
-    end
-end)
-
 spec:RegisterCombatLogEvent(function(...)
     local timestamp, subtype, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
           destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool,
@@ -1053,54 +974,6 @@ spec:RegisterCombatLogEvent(function(...)
         --print("Debug: Initialized Ignite Entry for GUID:", destGUID)
     end
 
-    -- Debugging:--print incoming event details
-    --print("Debug: Event Type:", subtype, "Spell ID:", spellID, "Amount:", amount, "Critical:", critical)
-    if inCombat == true then
-		--print("combat")
-        if (subtype == "SPELL_PERIODIC_ENERGIZE" or subtype == "SPELL_ENERGIZE") and sourceGUID == state.GUID then
-            totalManaGained = totalManaGained + amount
-            --print(totalManaGained .. " + " .. amount)
-        end
-
-        combatTime = GetTime() - combatStart
-        --print(combatTime)
-
-        if combatTime > 0 then
-            local averageManaPerSecond = totalManaGained / combatTime
-            local formattedAverage = string.format("%.2f", averageManaPerSecond)
-			--print(combatTime)
-            --print("Total Mana Gained: " .. totalManaGained .. "\nAverage Mana Per Second: " .. formattedAverage)
-            avgManaGained = formattedAverage
-        else
-            --print("Total Mana Gained: " .. totalManaGained .. "\nAverage Mana Per Second: 0.00")
-        end
-    end
-
-
-    if inCombat == true then
-        if subtype == "SPELL_CAST_SUCCESS" and sourceGUID == state.GUID then
-            spellCost = GetSpellPowerCost(spellID)
-			--print(spellCost)
-            for _, spellCost in pairs(spellCost) do
-                totalManaSpent = totalManaSpent + spellCost.cost
-            end
-        end
-
-        combatTime = GetTime() - combatStart
-        --print(aura_env.combatTime)
-
-        if combatTime > 0 then
-            local averageManaPerSecond = totalManaSpent / combatTime
-            local formattedAverage = string.format("%.2f", averageManaPerSecond)
-            --print("Total Mana Spent: " .. totalManaSpent .. "\nAverage Mana Spent Per Second: " .. formattedAverage)
-            avgManaSpent = formattedAverage
-			difference = (avgManaSpent - avgManaGained) + active
-			timeToOOM = lastMana / difference
-        else
-            --print("Total Mana Spent: " .. totalManaSpent .. "\nAverage Mana Spent Per Second: 0.00")
-			return ""
-        end
-    end
     lastMana = UnitPower("player", Enum.PowerType.Mana)
     if sourceGUID == state.GUID then
         if subtype == 'SPELL_DAMAGE' then
@@ -1168,7 +1041,6 @@ spec:RegisterCombatLogEvent(function(...)
         Hekili:ForceUpdate("MAGE_AURA_CHANGED", true)
     end
 end, false)
-spec:RegisterStateExpr( "time_to_oom", function() return timeToOOM end )
 
 -- Declare static variables to retain their values across function calls
 local oldHealth = nil
@@ -1253,24 +1125,6 @@ spec:RegisterStateExpr("my_ttd", function()
 
     return lastCalculatedTTD  -- Return the last valid TTD if health has not changed
 end)
-local function get_evocation_cooldown()
-    local start, duration, enabled = GetSpellCooldown(12051)  -- Spell ID for Evocation
-    if enabled == 0 then
-        return 0  -- If Evocation is not on cooldown, return 0
-    else
-        local remaining = (start + duration) - GetTime()
-        if remaining < 0 then remaining = 0 end  -- Ensure no negative values
-        return remaining
-    end
-end
-
-
--- Register Hekili state expression to reflect the current rotation choice
-spec:RegisterStateExpr("current_rotation", function()
-    return currentRotation
-end)
-
-
 
 -- Register state expressions to expose Ignite data
 spec:RegisterStateExpr("ignite_total_amount", function()
@@ -1848,7 +1702,7 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-            removeBuff("impact")
+            removeBuff("impact_stun")
         end,
 
 
@@ -2301,6 +2155,7 @@ spec:RegisterAbilities( {
         spendType = "mana",
 
         startsCombat = true,
+        cycle = "living_bomb",
 
         handler = function()
             applyDebuff( "target", "living_bomb" )
@@ -2685,9 +2540,9 @@ spec:RegisterOptions( {
     gcd = 1459,
 
     nameplates = true,
-    nameplateRange = 8,
+    nameplateRange = 15,
 
-    damage = false,
+    damage = true,
     damageExpiration = 6,
 
     potion = "potion_of_speed",
@@ -2697,39 +2552,6 @@ spec:RegisterOptions( {
     -- package2 = "",
     -- package3 = "",
 } )
-
-spec:RegisterSetting( "spellsteal_cooldown", 0, {
-    type = "range",
-    name = strformat( CAPACITANCE_SHIPMENT_COOLDOWN, Hekili:GetSpellLinkWithTexture( spec.abilities.spellsteal.id ) ),
-    desc = strformat( "If set above zero, %s will not be recommended more frequently than the specified timeframe (in seconds).\n\n"
-        .. "This setting can prevent %s from remaining the first recommendation when your enemy has stacking buffs or multiple buffs.",
-        Hekili:GetSpellLinkWithTexture( spec.abilities.spellsteal.id ), spec.abilities.spellsteal.name ),
-    width = "full",
-    min = 0,
-    max = 15,
-    step = 0.1
-} )
-
-spec:RegisterStateExpr( "spellsteal_cooldown", function()
-    return settings.spellsteal_cooldown or 0
-end )
-
-
-spec:RegisterSetting( "living_bomb_cap", 3, {
-    type = "range",
-    name = strformat( SPELL_MAX_CHARGES:gsub( "%%d", "%%s"), Hekili:GetSpellLinkWithTexture( spec.abilities.living_bomb.id ) ),
-    desc = strformat( "When target swapping is enabled, %s may be recommended on the specified number of targets.\n\n"
-        .. "This setting can help balance mana expenditure vs. multi-target damage.",
-        Hekili:GetSpellLinkWithTexture( spec.abilities.living_bomb.id ) ),
-    width = "full",
-    min = 1,
-    max = 10,
-    step = 1
-} )
-
-spec:RegisterStateExpr( "living_bomb_cap", function()
-    return settings.living_bomb_cap or 3
-end )
 
 spec:RegisterSetting( "minimum_combustion", 150, {
     type = "range",
@@ -2800,5 +2622,5 @@ spec:RegisterPackSelector( "frost", "Frost Wowhead", "|T135846:0|t Frost",
 -- spec:RegisterPack( "Arcane Wowhead", 20230924, [[Hekili:9EvBVTTnq4FlffWjfRw2X5TLIMc01bSLGTGH5o09jjrjF2MiuKAKu2nfb63(UJ6Lqjl7g0c0Vyjt(W7nE39Ck8KWpgoFbZcH3nB6StNE1SZdMoD6StonCU9HCiCEol9E2k8fjld)996uMekJ)KA7AGTG2)bHcFbLJrvOtrmRT2CZBMmz72TbBRWfKQYMSvzf3pzvbFbmjvWmgWmjdL9eMtOtwKBgRvwMLRKJtvkXc1wPzmlHl4woygNVbLEsbxyVrgMmSHplCoRWUwPdN)7W94jr7HVybuDaWKgoNoW4PxnE2zVPm(gjkBMOm2QzsJWP8Y4LAvwRtgeoxWnwd5JmfGpUZf3ajlralc)LW5PAUf0Cgg1y6vGnyl3UMlpzkEIusK4tNtgbFoxOm0kw00DISgqUgmGmfIulJY4Yf(kaXEQp2eb)lFHP7J5mFmlf4nMXQ53dDHzPaXswHW26knNjvvirhXKdcrpz3XwDamwG1hvhRudzQnquAH2adzP7jakaPnGlXWfzkrSeJsNtsmO(aLXJkJtkwUCyuuAJdsLDeSsOsyIi7AqNHpnS8CqhLUMUPc04f8dEbnUgI2srw0ip)hHr6G0Q2GI8NmMdz4K9DrN0hv1ZoH5l9ruNbMR2c6E4(zFC80hI2aCPPhOR8bLX1ALoIN5Ao0bhM13nUrLDAEE1b)hd2(GjFGQ44Y7bRbFBnZIlQb5r4tf5WB5eomplLVKdunyJMlmqeEpKzC6A)vIeEm7dKqg28Om(DLXZ8Y0zcru1FIOQ7QA8OQUCuvoj8z7v4la39wDinb7MzdmwSxzz81LXN5UzpU(YnJBmCbIIP1y0cVIlJF8XYySGFt0Q0fbx0roLXVAN7SAru5YN(DzvdAsTzJyblxUAh9xJZP(ZgiNYPQ(Pb7V8jJjzb5POR(2Y4lN63XihlS4M1reeNuU45jf)wTWgvQRrEvZomoJ0pjm7qDU77iAUqWzsIhRtA7CihZ5sanMfH8h(2HMX9Q23rqUGBBh0b9Kxug)CeYo7ZX2kcbKAR0rFNPD7D6mtvTrmDMs3NAaJxBWwveQgMv0zXwtsmVa7i8P3)33DZD)gYCwg)X1yjkplxPX7GLkm0CunXYrOdb)xb2vdDkJkJk5lSQmKWgxa7GjxbMGYB)donmbXd)bLe1RB7JQ7U(VOuSkV)30Afx)4t(8RAp)5FZNV82BCMpDStBimkJD0942uUJAjwOeo)LLX)jg0qnvpc0T4k(t6GDnh76A(0SoJDt5WtRhWzmf1htt5GdYCWjDCcVxghzSVex(VAYMlVTYCnbTj4)01t2jZ518LxtjxJouI1HevBwejPx81e1O9NFoSwEkvSXd)1QCOw4ii)5s8x)P5q8x1FUJkr(HMySpSwsxYXoaJ(OdZIp6zpMHVYpe6Vt7zNjk81B1yc(R4pwG)6TJb4VOpTVll9BKo3xMTe6DUX7Xp)AIz(AKyMcoDP2F3SbCNggtc(EPfV(SrhVhk6hFCp0ZVAaLvFSVMU2l17OkA3HKSBIGo52(mKKgBObF7Lt9b2sc2bZjtPQSM6qmC(KQA)YKQ0VoFgt)J0)Bv6VFZ3N0F9oFtcLnqJEsKoH))]] )
 --spec:RegisterPack( "Fire WoW Sims", 20240617, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
 -- spec:RegisterPack( "Frost Wowhead", 20230930, [[Hekili:fJ1FpsTnq0plOkT3Du2S)4G7a0DivkQTGApv1qf9VsI3Kj76Eo2bBNBzpDkF27yNnjoztwOuHQqcYAp(nppEM5ztWIG3h4Nq0qWnlNV885V485ElE6Y5p95b(6D5qGFoj(wYA8dojd)7Fsku6YOpi2UbijMP3Xe4himkrHmgnzJwNRE5SzB3U1BBLDEXISzBfA2TZwxqtGzXmIsbQzzi0Zsnyoljxnvk0envWNgleSeXwUAkzfLr1uqnn)oe8vfuM(T8Gvdt7lrAKdXb3G8FdnjbQSeuXb()g6RxwgvTdENllPX7MEhq5QwEo1YqACf5MA45uddrsCuww(oFixdzRazzKHByisksPmK7FxzuxoGd8nJgi29ys57WrXH)DjG4VIGeGeBaq5Lxp03F9mImMWHWvskJrj8y4j00RLeAYKvfPPEhmTNX1hfkkxdmgeRni9OphuDMRzPhXlXc(FxiHWmcNeUgYmEP(7W4ne5AqD1YHxBMGPbEirMjKM1z9DbN(XcOAWJ4xvrwMGhUftdLHadYaUMWS7XCq7zwYDWK1SD5B8a0goHvzShWjRyqYWWMkIlu4Mznn2G1APOiFsfyHjcTNZ8xpFyiY3jfRWehBaFLqPQp6FdKskyTh82OxbgJLyvdJ5oUDaLgWDeJINeXjx3ouyDkxfS)yDcOlazuPuidPMC2oapEy7ljwHiG1jH26e3b3NWKl2I57oJNYW(wHXKC3bZfMVEsHccfPPHRXn3IUbfwsOItYn0YyvZavzNnmOkJToA4mUeYi4)(QlMBlf)tfugr47kJ0sk)wqRWV2GLGrejWpb)xHEdi3sn2z6GrtPqINlNm0GI1ZQwaFda5MMjaCp(lTOmcRfW4l(JDyZ4YitoaAaLVgpHrFKw36jQQUa9fndtiWiNOqXq6TLQ3GKAVDRWYdCzY9)mLkXL8ACWomlbPryQLfM41PjGniHTSUh4Ef5p8q1VRObgXdTDZ8uAuB56fNn50kS8sRDsOXXEuEykJUEJ(HhCnO7CN15WUE(MA5dCkwmHPByoNNdTBpbDgS(m8QymkgQPzWJpY(4aA0SpA4YkS1hVfC0E3fTIrV)EImXy((YDGdzyZ8xTCYJYe3HUTBok3K9AtnhCnAZjS2ZCIs5lMp5qi2xZaFkNjuMcIVoyQ2P19BQMV7YwoVZofW4PTd9NRo0mrtB9owv3K3lpwF1LDGhUteBfg7yZ5ZhmrjW)o8SehT9Meb(BjsoUhub(F4h(JBE7n)mkzxg9(nyYpnlxiXAIutrXjjv9tpPmscFSaddjyfLWu)rk0ImSbwITudtyuyjZVInslJwS8LMwMC0X25pzF(4FDsvnCZVR79HJF6IpDMNPl(BT(3SSLOtS7hSmNQ0g8d8r3Urid8)f4w8Mab(2zS3XRIP4N3yVZx1sd8DB)h4V3HbVoqJXdJDTJ0SKwzad(wPb3bB0gmyCURVCve65RN2ZxXsSvNKsc8Fuz0rKfCy1GYkgSFMlhA6q3Jax4AKRwsp7U01UgTLEg9CJroPRMyEZIQY57TIxm6(VJ6tz0KYObuGSJpUkuz0RkJUyU7P(Ean(EX8Eo3CDzjnVY0VsLRwF1OBz91IrsQC67oeb(FuPZ9W40YO(IBLrp8W(ZKregIUgR5lJoZEiDADv7OIDvaoUGhIKns2V8SLLJj8zjWHIFnxXQts0acHLrxHgulgwg94JUVDktAA2A495hN3hks2dOMqMfTXBC0viZwcS0UfXokvAuTaxR9AH8z)7HSNgPDS((WvV26Nl(24N(I6wFD5O(AVC(bOV0PDrRaVfSJ2ERV4EVgDlgVtxTuTnn7sh3lHCmNLQ2yX9axBKQ63cBeup3b1MRjybOJOOZTdCjV28w(9VYQriDGEzh8U2ED0o4)HGw2AECCBt(HFG8qAZD0l)sa5G57(s7d2mnt3OQpA029D32O(YofbDER(X1(h(14oxOW517nk9JfvAFtUDV)F8sfJx8AFWU1f7lJ79ODREGBXv7unxWy4Ob(qENRru)g)G2)e8pd]] )
-spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:nJ1xpoQnq8pl3lN2TvnfiB2CN028Wj1QRVKx4E2gd4eCJngzm7FKoXN9o2oHqsmqsKQuFy3aJhpZV5VEmOq0pqX5enfToki6PGNd)6SWLZF(P5Oy9hvuuCfjBhzl8qjra))VykABYF(EfvXe0snHBy5dUKKBevTSrLbSHItByC9FxIspt(lbMQOzO1FbfxWYZPowO1zO4FuWQBtm)rAt2R42e5g49mntw2MWz1Ay5nsvBY3P7yC2muSLOv7fsLgN3OigUXejfOU2AJ0sskNMJ(gk2jlu8goyryPkfPb0DGtTxEt5KAn(nYRudZZhN5CfzRSSgNQOeDHzdpn(gSiPwRy7SIFXeCdHaSfqO4mftdrcIXFVzZmMa8A6znvTjFUnjN6iUTeycicYtBC1BinC9bDmIIELasgiAFc7I)AiQJb3V15c05nWpb9bIz3VsX0sQGrHy1F0MeoIhE0ng1PcBOf8ryToFy8CbYhoyjRaHs1JbGv7bWO2EFG1M8RTjp8W5Y53a58yBYVdR5zPWh)fybUSCBNuaQ9f7Jp63YMiRsrR40swDbwqkj9nuZ7ZeK3TAY(swJsbvZwBomArqGnbktksj6Hsjt7lY((gNNlOhsAGIr7ZytTQRIDVt1tnlOVNh30esUMcmRes1fgwvME1tl(Sn3xaDqCS5Y)xV0VH0vNtv1u1ow52(I1SXVmv6RvFPCPmN3u3vdwPO5SmnnhBCMWc22yRC(w3R43y6cyzjpx(wz9rWCKfda(64UKEmpmOmkyCyjyLmrJaFQUddg3T5x5MCI2KxmnawA1QRteoNiSn2xzwjkyFY25DR6tKZEfcj4uqnNTs1hkPTx4b6olUlmUpSh6Rv3fjWtc2G7eSxckVKvubHvcTfEbQFMTyOmHqFTsVYOXQ)tSppbdlq9179kbk4ccxmeqxU4MXPfpt0XS3oaa9rgNI1e1wkmDbSlO7Y74tPgpF0EGHrw88jpasZYmHC76xCUdyHZT4DQjb6MGzmu48uNs(LoW5v5Tj)8NNVLvJVflENOTDVPO(FcG9DCWWtYD)G2LWmZ0PNvggCVgYvlgRXnWrweptDE)w2Ny14n14UtwUdR6QeH1IM4mq)tgFJg0PTuUQ60OboEC6wddRS7QNXahyenWG(3WThUbODBvH(cEgipXfYU1lbD0HCyHlGZH7PmWfgotlfsngkEOKDWX2GSocTUtbTs7MoYPtfJCKHvQ3ZbdhMWSVVOBIdtzHvYtn5D3a19f9g22cn(OWmxDZvLDyICxfMtf9B6kKgdeTo4G2W7P8nFZ17IsbNMgKs48(y1OIjA9vNjvz2BMhD9TuS3EggCE)TIM((ZzYY)Pb2Ub94TuXjb4J3TYKPFlxYP3wN4driykfuhYe2pGJpjyTPxHjqn837t08grvcrHAZxYH0Olmi47eEoKQlK2DH(3p]] )
-spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:DszqpQnmqu4Fl9spMssi0fP2k12lBVWfVND8e7jlw4yhz7uesR8V9ABGfqlSL2Dfbd259(M5XeAj9jkraEKUQAw18zlQQkkxoFrtnL43nIuYiW3aphxOHH41v42a77woOXa7NGhsNyNYaIKskPZ7YsI9WKYhxUQ84fpLGAOtHc6pOeG7LgD89SwTJMTOLs4wPhTsiPq3uFFXHT7uGZx48rycSVfy1bwG9Ylb2WUwVxeyFjWQMfTyv17BxhADODJu)85MDUvzskMgdSpgy5n6ugJqnfbqy2QVHV1PY(kgAXrfQLU1TdGgUltthSyK7ZQVSjP(83VQWFB4W(LN0)d32GdWhBKvnV1Y6Cb1Cx5woy(BvvsUf)FYLbJpzTOoc3NIWf)lt(XI4c6JFF5S9je3yuP8Q41MtHfhaP2Tp1AoeKNFVlRsO(53h1EvCsO1y7oNZ099WDvIdsNtQq3TAAh3)qFB5DjAhyT5P0)HbOlJ9VgypK)Pw5SZC86XZjo8PdnArUzOdEDC)AGoeXRfSdg7Bk8tBDrcvV4EgOVGS9)t2cwDCcp2IPeNzYYX0QUjPY)lnnMBUrKNYlcm5xNi6rqjSimyOK1sHaZNsGooL80AzKN0liWo80WaZ0h)CgHal)uVaR3ydShXnsLSiZb9pd]])
+spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:LA1YokUoq0VLzdlrbOFk1nlgP7Oz2WMmRTJtCbXx8JiNkqZM8TpLDOBc9aj0AwakXUCDo1RJdBg73SuPab2Q5jZVl5H5ponz(IflEILIhQawALOyRyd9GvyO))HYdTz)3BvGxzalk0btoODczWv1UgFbzglnVrPXFzz5N7)zptgvbfSvecLkPe6mbQlyP)Uuv3Mf(jAZocCBMBn9EbQC22mTQgPTx78Tz)e2Q0QPS04Ir0lDEKlB8IG1CHdOvxfJrWkY1GK9DwANVyPR1ueXD(CgsS7DlXlABUwuJ89IDqW4fdBS0l24S18CpiWYWbUB4dezsn6vBJU)(rSMkb8iHyPfEfsvcriFVE9uLHYA40MQ2SjTzsOBXnwYiArYFyivVw0OX3XyaG8qLgSQ6sUryf9bl8(uYrQcf2MTSnB287tsIGw4m5c8gsPgNgbQi5no)F57QcC5D3pjYFd1f0zwxmCT0)NYf5ANtQBQ)iDu5bPQabjpWrAJyh1Yok39kFVclPTDAPBVT(ezpzYnuo7z81jvaGHPLrzvMgd)CShR54JM6Eqh2ChWblyuan(S812SfbN9Wn31FlE7XV0yrppIc)gaNgs(k7SU(ORIYt)Jth8ASXs9etooEOv7u2n8Cklhw9iUsh2FNxwm5CcT81izE(MAflDbuPWE7u6Vc8eBRo4DDKLC2SKHdTE8HG4qHg4DzU6WPObN34NVAAFMCHWn0dE9agjbEo64sfSC28ibVIGXG55lkfnqj(svYa2JiNCZ19(850O1v5ePTfHFen)lo3fp4iIfNu36FY1QnLi3dgHYEmZmVBU4D5X2SxiQLeH4kAcDpYnUqv9Z5QCHwheHJ7Tk5skWDrFheJOuux48fXR6MnIkWzvvYes(74vgJFHuHZ()n0XdeKVbm9j93o)INVYno9o6ivzJY7DEUYe)IOl5HymTd81b779np7fElLPJZKIgSmWGFk0sspW4INI9Nd]] )
+spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:Ds1xVTniq8pl7L9ONTttAJ02K2KMu3l5fQuFdZz7ZnOGbla3SkvXN9DqtAsAtYYAKcg7d(9N7GJxWVJZAbpYxuMxEv(SYRZYlNKNpLZ8pnGC2a0ScEGMOHEA8h2gqJbXV(ZaAL9O2dQG4EZ9bbt27IR)jLbAJ46mJ2gApCw9Ou5)TMx)gYkPfnGn8f3WzlLTT4llbDnC2DlLUGi(hcInQiimD07nEPrhekPZtH7m2G4wCLujZ4S0htUc7GrLNMUOy7GNZqnuRWw(p5SxWHEM8u1GznA5SgR0twdIiup21LTjCTcC(mNNusq89Gysqeep)Cq4P0qL3u1kj991GOmN4zr555SgTo0UsQFyFg3NVKCYghcIphePa1kJPvnsQO1SwFoYNetahHvloOqT0TSQh0WfXCCHzdn(e6ZNgr)QZBn8rtd8Y0D4)PtsWboGYRLtFpVtsUA6fvgt1P)L1IWn7JbxsynJwlD2pi(cjo6xs5h4KdSafSizHRpoN7qVXyuXQB2RzXml2dsTlLikMEcb6J3H(4(zRkNNu58ZJuNIAfuzS17dtCFKhVej0lDoPcDNQiTn(M6uXLD9TgS2uJQ)JlWhEo7BbXnPd4f7F5945VD6iM7zdwSX0xdV2U5ycTNKxfy7n2358DHoOCpz2L0l5nhesc6rQ)sm4EDAxdwn1VXfBidJ(LrzClOATi0Bs7I)3d]])
