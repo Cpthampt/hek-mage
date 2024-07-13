@@ -8,6 +8,28 @@ local strformat = string.format
 
 local spec = Hekili:NewSpecialization( 8 )
 
+function round_half_to_even(val)
+    -- if decimal value is exactly halfway
+    if val%1 == 0.5 then
+        local val_floored = floor(val)
+
+        -- if floored value is even then return even value
+        if val_floored%2 == 0 then return val_floored end
+
+        -- otherwise return the ceiling (which has to be the even value)
+        return val_floored + 1
+    end
+
+    -- round "normally"
+    return floor(val+0.5)
+end
+
+function compute_dot_duration(base_dur, base_tick_dur)
+    local tick_dur = floor(base_tick_dur/(1+UnitSpellHaste("player")/100) * 1000 + 0.5)/1000
+    local tick_cnt = round_half_to_even(base_dur/tick_dur)
+    return tick_dur * tick_cnt
+end
+
 spec:RegisterResource( Enum.PowerType.Mana )
 
 -- Talents
@@ -95,6 +117,26 @@ spec:RegisterStateExpr( "lb_duration", function()
  end )
 
 spec:RegisterAuras( {
+    active_flamestrike = {
+        duration = function() return 8 end,
+        max_stack = 20,
+        generate = function ( t )
+            local applied = action.flamestrike.lastCast
+
+            if applied and now - applied < 8 then
+                t.count = t.count + 1
+                t.expires = applied + 8
+                t.applied = applied
+                t.caster = "player"
+                return
+            end
+
+            t.count = 0
+            t.expires = 0
+            t.applied = 0
+            t.caster = "nobody"
+        end,
+    },
     -- Arcane spell damage increased by $s1% and mana cost of Arcane Blast increased by $s2%.
     arcane_blast = {
         id = 36032,
@@ -458,7 +500,7 @@ spec:RegisterAuras( {
         spend = 0.17,
         spendType = "mana",
         --usable = function() return debuff.living_bomb.down end,
-        duration = 12,
+        duration = compute_dot_duration(12,3),
         tick_time = 3,
         max_stack = 1,
  },
@@ -719,8 +761,9 @@ local function CalculateTicks()
     end
 
     for i = 10, 40 do
-        local tickspeed = 1000 / (1000 / (10000 / (i - 0.5)))
-        local adjusted_tickspeed = (i % 2 == 0) and (math.floor(tickspeed) - 0.5001) or (math.floor(tickspeed) + 0.4999)
+        local tickspeed =  1000 / (1000 / (10000 / (i - 0.5)))
+        local adjusted_tickspeed = (i % 2 == 0) and (math.floor(tickspeed) + 0.4999) or (math.floor(tickspeed) - 0.5001)
+
         local breakpoint = 1000 / adjusted_tickspeed
         local adjusted_haste = (haste / 100) + 1
         if adjusted_haste > breakpoint then
@@ -740,20 +783,172 @@ end
 local function CalculatePyroblastContrib(spellpower, floorMastery)
     return math.ceil((math.floor(0.175 * 973.3) + 0.180 * spellpower) * 1.25 * 1.03 * floorMastery / 3)
 end
+-- Create a table to store the variable data
+local ignite_contrib_tracker = {
+    lowest = nil,
+    highest = nil,
+    total = 0,
+    count = 0,
+    average = nil,
+    highest_ticks = 10,
+    lowest_ticks = 10,
+    average_ticks = 10,
+    total_ticks = 0,
+    highest_spellpower = 0,
+    lowest_spellpower = 0,
+    average_spellpower = 0,
+    total_spellpower = 0,
+    highest_mastery = 0,
+    lowest_mastery = 0,
+    average_mastery= 0,
+    total_mastery = 0,
+    highest_combust = 0,
+    lowest_combust = 0,
+    average_combust = 0,
+    total_combust = 0,
+}
+
+-- Function to update the tracker with a new number
+local function updateIgniteContribTracker(value, ticks, spellpower, mastery, combust)
+    -- Ignore nil or zero values
+    if value == nil or value == 0 then
+        return
+    end
+
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest == nil or value < ignite_contrib_tracker.lowest then
+        ignite_contrib_tracker.lowest = value
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_combust == nil or combust < ignite_contrib_tracker.lowest_combust then
+        ignite_contrib_tracker.lowest_combust = combust
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_ticks == nil or ticks < ignite_contrib_tracker.lowest_ticks then
+        ignite_contrib_tracker.lowest_ticks = ticks
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_spellpower == nil or spellpower < ignite_contrib_tracker.lowest_spellpower then
+        ignite_contrib_tracker.lowest_spellpower = spellpower
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_mastery == nil or mastery < ignite_contrib_tracker.lowest_mastery then
+        ignite_contrib_tracker.lowest_mastery = mastery
+    end
+
+    -- Update the highest value
+    if ignite_contrib_tracker.highest == nil or value > ignite_contrib_tracker.highest then
+        ignite_contrib_tracker.highest = value
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.highest_combust == nil or combust > ignite_contrib_tracker.highest_combust then
+        ignite_contrib_tracker.highest_combust = combust
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_ticks == nil or ticks > ignite_contrib_tracker.highest_ticks then
+        ignite_contrib_tracker.highest_ticks = ticks
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_spellpower == nil or spellpower > ignite_contrib_tracker.highest_spellpower then
+        ignite_contrib_tracker.highest_spellpower = spellpower
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_mastery == nil or mastery > ignite_contrib_tracker.highest_mastery then
+        ignite_contrib_tracker.highest_mastery = mastery
+    end
+
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total = ignite_contrib_tracker.total + value
+    ignite_contrib_tracker.count = ignite_contrib_tracker.count + 1
+    ignite_contrib_tracker.average = ignite_contrib_tracker.total / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_ticks = ignite_contrib_tracker.total_ticks + ticks
+    ignite_contrib_tracker.average_ticks = ignite_contrib_tracker.total_ticks / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_spellpower = ignite_contrib_tracker.total_spellpower + spellpower
+    ignite_contrib_tracker.average_spellpower = ignite_contrib_tracker.total_spellpower / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_mastery = ignite_contrib_tracker.total_mastery + mastery
+    ignite_contrib_tracker.average_mastery = ignite_contrib_tracker.total_mastery / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_combust = ignite_contrib_tracker.total_combust + combust
+    ignite_contrib_tracker.average_combust = ignite_contrib_tracker.total_combust / ignite_contrib_tracker.count
+end
+
+-- Function to get the tracker data
+local function getTrackerData()
+    return {
+        lowest = ignite_contrib_tracker.lowest,
+        highest = ignite_contrib_tracker.highest,
+        average = ignite_contrib_tracker.average,
+        lowest_ticks = ignite_contrib_tracker.lowest_ticks,
+        highest_ticks = ignite_contrib_tracker.highest_ticks,
+        average_ticks = ignite_contrib_tracker.average_ticks,
+        total_ticks = ignite_contrib_tracker.total_ticks,
+        count = ignite_contrib_tracker.count,
+        lowest_spellpower = ignite_contrib_tracker.lowest_spellpower,
+        highest_spellpower = ignite_contrib_tracker.highest_spellpower,
+        average_spellpower= ignite_contrib_tracker.average_spellpower,
+        lowest_mastery = ignite_contrib_tracker.lowest_mastery,
+        highest_mastery = ignite_contrib_tracker.highest_mastery,
+        average_mastery = ignite_contrib_tracker.average_mastery,
+        lowest_combust = ignite_contrib_tracker.lowest_combust,
+        highest_combust = ignite_contrib_tracker.highest_combust,
+        average_combust = ignite_contrib_tracker.average_combust,
+    }
+end
+-- Create a table to store the variable data
+local combust_tracker = {
+    lowest = nil,
+    highest = nil,
+    total = 0,
+    count = 0,
+    average = nil,
+}
+
+
+-- Function to get the tracker data
+local function getCombustTrackerData()
+    return {
+        lowest = combust_tracker.lowest,
+        highest = combust_tracker.highest,
+        average = combust_tracker.average,
+        count = combust_tracker.count,
+    }
+end
+-- Register state expression for predicted combustion
+spec:RegisterStateExpr("ignite_contrib_tracker", function()
+    local data = getTrackerData()
+    return data
+end)
+spec:RegisterStateExpr("combustion_settings_helper", function()
+    local tracker_data = getCombustTrackerData()
+    local settings_helper = {
+        lowest_combust = 0,
+        highest_combust = 0,
+        average_combust = 0,
+    }
+
+    local spellpower = GetSpellBonusDamage(3)
+    local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
+
+
+    if tracker_data.lowest and tracker_data.highest and tracker_data.average > 0 then
+        settings_helper.lowest_combust = combust_tracker.lowest
+        settings_helper.highest_combust = combust_tracker.highest
+        settings_helper.average_combust = combust_tracker.average
+    end
+    return settings_helper
+end)
+
 
 local function IgniteContrib(floorMastery, mastery, ignite)
+    local combustTicks = CalculateTicks()
+    local spellpower = GetSpellBonusDamage(3)
     if ignite then
         local total_amount = ignite.total_amount
-        --ignite.total_amount_no_combustion or
-
-        -- Debugging:--print before calculation
-        --print("Debug: Ignite Contribution Calculation - Total Amount:", total_amount, "Ticks Remaining:", ignite.ticks_remaining)
-
         if total_amount then
             local contrib = math.ceil((total_amount / ignite.ticks_remaining) / 2 * floorMastery / mastery)
-
-            -- Debugging:--print the calculated contribution
-            --print("Debug: Ignite Contribution:", contrib, "Total Amount:", total_amount)
             return contrib
         else
             --print("Debug: Ignite Total Amount is nil during contribution calculation")
@@ -773,16 +968,6 @@ local function CalculatePredictedCombustion()
     local targetGuid = UnitGUID("target")
 
     local igniteEntry = ignite[targetGuid]
-    if igniteEntry then
-        local perTick = igniteEntry.total_amount / igniteEntry.ticks_remaining
-        --print("Debug: Ignite Entry for GUID:", targetGuid)
-        --print(" - total_amount:", igniteEntry.total_amount or "nil")
-        --print(" - per tick:", perTick or "nil")
-        --print(" - ticks_remaining:", igniteEntry.ticks_remaining or "nil")
-        --print(" - total_amount_no_combustion:", igniteEntry.total_amount_no_combustion or "nil")
-    else
-        --print("Debug: Ignite Entry is nil for GUID:", targetGuid)
-    end
     local igniteContrib = 0
 
     local livingBombContrib = 0
@@ -828,9 +1013,34 @@ local function CalculatePredictedCombustion()
         totalCombustionDamage = totalCombustionDamage * (((GetSpellCritChance(3) + 5) / 100) + 1)
     end
 
-    --print("Debug: Predicted Combustion - Tick Damage:", tickDamage, "Total Damage:", totalCombustionDamage)
-
+    --print("Debug: Predicted Combustion - Tick Damage:", tickDamage, "Total Damage:", totalCombustionDamage
     return totalCombustionDamage
+end
+
+-- Function to update the tracker with a new number
+local function combustTracker()
+    local ticks = CalculateTicks()
+    local combust = CalculatePredictedCombustion()
+
+    if combust == nil or combust == 0 then
+        return
+    end
+
+    -- Update the lowest value
+    if combust_tracker.lowest == nil or combust < combust_tracker.lowest then
+        combust_tracker.lowest = combust
+    end
+
+    -- Update the highest value
+    if combust_tracker.highest == nil or combust > combust_tracker.highest then
+        combust_tracker.highest = combust
+    end
+
+
+    -- Update the total and count for calculating the average
+    combust_tracker.total = combust_tracker.total + combust
+    combust_tracker.count = combust_tracker.count + 1
+    combust_tracker.average = combust_tracker.total / combust_tracker.count
 end
 
 local latestCritDamage = 0
@@ -844,7 +1054,7 @@ total_damage = 0
 local function IgniteSpellcritUpdate(destGuid, amount, spellId)
     -- Ensure the ignite entry exists or create a new one with default ticks remaining
     local igniteEntry = ignite[destGuid]
-    if igniteEntry then -- If the target already has an ignite, get the ignite from the table
+    if igniteEntry and igniteEntry.total_amount > 0 then -- If the target already has an ignite, get the ignite from the table
         igniteEntry.ticks_remaining = 3
     else -- If the target does not have an ignite, create a new one
         igniteEntry.ticks_remaining = 2
@@ -852,18 +1062,24 @@ local function IgniteSpellcritUpdate(destGuid, amount, spellId)
 
     -- Calculate mastery contribution
     local mastery = GetMastery() * 2.8 / 100 + 1
+    --print("Mastery: ", mastery)
     local total = amount * 0.4 * mastery
+    --print(amount .. " * 0.4 * " .. mastery .. " = " .. total)
+    --print("Ticks Remaining: ", igniteEntry.ticks_remaining)
+    --print(total / igniteEntry.ticks_remaining)
 
     -- Debugging:--print before updating
     --print("Debug: Before Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Total Amount No Combustion:", igniteEntry.total_amount_no_combustion)
 
     -- Update or initialize total_amount
-    if igniteEntry.total_amount then
+    if igniteEntry.total_amount > 0 then
+        --print("Update: ", total / igniteEntry.ticks_remaining )
         if spellId == 11129 then
             igniteEntry.total_amount_no_combustion = igniteEntry.total_amount
         end
         igniteEntry.total_amount = igniteEntry.total_amount + total
     else
+        --print("Initialize: ", total / igniteEntry.ticks_remaining )
         igniteEntry.total_amount = total
     end
 
@@ -895,11 +1111,12 @@ local function IgniteTickUpdate(destGuid)
             igniteEntry.ticks_remaining = igniteEntry.ticks_remaining - 1
 
             ----print debug information for each tick
-            --print("Debug: Ignite Tick - GUID:", destGuid, "Tick Damage:", tick_damage, "Remaining Ignite Bank:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+
 
             -- Update or remove the entry based on remaining ticks and total amount
             if igniteEntry.ticks_remaining > 0 and igniteEntry.total_amount > 0 then
                 ignite[destGuid] = igniteEntry
+               -- print("Tick Damage:", tick_damage, "Remaining Ignite Bank:", igniteEntry.total_amount)
             else
                 ignite[destGuid] = nil
                 --print("Debug: Ignite expired for GUID:", destGuid)
@@ -926,6 +1143,7 @@ end
 
 -- Register state expression for predicted combustion
 spec:RegisterStateExpr("predicted_combustion", function()
+    combustTracker()
     return CalculatePredictedCombustion()
 end)
 
@@ -983,6 +1201,7 @@ spec:RegisterCombatLogEvent(function(...)
         end
         if subtype == 'SPELL_DAMAGE' and allowedSpellIds[spellID] then
             if critical then
+               -- print(amount)
                 IgniteSpellcritUpdate(destGUID, amount, spellID)
             end
         elseif subtype == 'SPELL_AURA_APPLIED' then
@@ -1413,6 +1632,7 @@ spec:RegisterAbilities( {
         handler = function()
             if target.within10 then
                 applyDebuff( "target", "blast_wave" )
+                applyBuff("active_flamestrike")
             end
         end,
 
@@ -1820,6 +2040,7 @@ spec:RegisterAbilities( {
             if buff.clearcasting.up then removeBuff( "clearcasting" ) end
             if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
             applyDebuff( "target", "flamestrike" )
+            applyBuff("active_flamestrike")
         end,
 
         
@@ -2622,5 +2843,5 @@ spec:RegisterPackSelector( "frost", "Frost Wowhead", "|T135846:0|t Frost",
 -- spec:RegisterPack( "Arcane Wowhead", 20230924, [[Hekili:9EvBVTTnq4FlffWjfRw2X5TLIMc01bSLGTGH5o09jjrjF2MiuKAKu2nfb63(UJ6Lqjl7g0c0Vyjt(W7nE39Ck8KWpgoFbZcH3nB6StNE1SZdMoD6StonCU9HCiCEol9E2k8fjld)996uMekJ)KA7AGTG2)bHcFbLJrvOtrmRT2CZBMmz72TbBRWfKQYMSvzf3pzvbFbmjvWmgWmjdL9eMtOtwKBgRvwMLRKJtvkXc1wPzmlHl4woygNVbLEsbxyVrgMmSHplCoRWUwPdN)7W94jr7HVybuDaWKgoNoW4PxnE2zVPm(gjkBMOm2QzsJWP8Y4LAvwRtgeoxWnwd5JmfGpUZf3ajlralc)LW5PAUf0Cgg1y6vGnyl3UMlpzkEIusK4tNtgbFoxOm0kw00DISgqUgmGmfIulJY4Yf(kaXEQp2eb)lFHP7J5mFmlf4nMXQ53dDHzPaXswHW26knNjvvirhXKdcrpz3XwDamwG1hvhRudzQnquAH2adzP7jakaPnGlXWfzkrSeJsNtsmO(aLXJkJtkwUCyuuAJdsLDeSsOsyIi7AqNHpnS8CqhLUMUPc04f8dEbnUgI2srw0ip)hHr6G0Q2GI8NmMdz4K9DrN0hv1ZoH5l9ruNbMR2c6E4(zFC80hI2aCPPhOR8bLX1ALoIN5Ao0bhM13nUrLDAEE1b)hd2(GjFGQ44Y7bRbFBnZIlQb5r4tf5WB5eomplLVKdunyJMlmqeEpKzC6A)vIeEm7dKqg28Om(DLXZ8Y0zcru1FIOQ7QA8OQUCuvoj8z7v4la39wDinb7MzdmwSxzz81LXN5UzpU(YnJBmCbIIP1y0cVIlJF8XYySGFt0Q0fbx0roLXVAN7SAru5YN(DzvdAsTzJyblxUAh9xJZP(ZgiNYPQ(Pb7V8jJjzb5POR(2Y4lN63XihlS4M1reeNuU45jf)wTWgvQRrEvZomoJ0pjm7qDU77iAUqWzsIhRtA7CihZ5sanMfH8h(2HMX9Q23rqUGBBh0b9Kxug)CeYo7ZX2kcbKAR0rFNPD7D6mtvTrmDMs3NAaJxBWwveQgMv0zXwtsmVa7i8P3)33DZD)gYCwg)X1yjkplxPX7GLkm0CunXYrOdb)xb2vdDkJkJk5lSQmKWgxa7GjxbMGYB)donmbXd)bLe1RB7JQ7U(VOuSkV)30Afx)4t(8RAp)5FZNV82BCMpDStBimkJD0942uUJAjwOeo)LLX)jg0qnvpc0T4k(t6GDnh76A(0SoJDt5WtRhWzmf1htt5GdYCWjDCcVxghzSVex(VAYMlVTYCnbTj4)01t2jZ518LxtjxJouI1HevBwejPx81e1O9NFoSwEkvSXd)1QCOw4ii)5s8x)P5q8x1FUJkr(HMySpSwsxYXoaJ(OdZIp6zpMHVYpe6Vt7zNjk81B1yc(R4pwG)6TJb4VOpTVll9BKo3xMTe6DUX7Xp)AIz(AKyMcoDP2F3SbCNggtc(EPfV(SrhVhk6hFCp0ZVAaLvFSVMU2l17OkA3HKSBIGo52(mKKgBObF7Lt9b2sc2bZjtPQSM6qmC(KQA)YKQ0VoFgt)J0)Bv6VFZ3N0F9oFtcLnqJEsKoH))]] )
 --spec:RegisterPack( "Fire WoW Sims", 20240617, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
 -- spec:RegisterPack( "Frost Wowhead", 20230930, [[Hekili:fJ1FpsTnq0plOkT3Du2S)4G7a0DivkQTGApv1qf9VsI3Kj76Eo2bBNBzpDkF27yNnjoztwOuHQqcYAp(nppEM5ztWIG3h4Nq0qWnlNV885V485ElE6Y5p95b(6D5qGFoj(wYA8dojd)7Fsku6YOpi2UbijMP3Xe4himkrHmgnzJwNRE5SzB3U1BBLDEXISzBfA2TZwxqtGzXmIsbQzzi0Zsnyoljxnvk0envWNgleSeXwUAkzfLr1uqnn)oe8vfuM(T8Gvdt7lrAKdXb3G8FdnjbQSeuXb()g6RxwgvTdENllPX7MEhq5QwEo1YqACf5MA45uddrsCuww(oFixdzRazzKHByisksPmK7FxzuxoGd8nJgi29ys57WrXH)DjG4VIGeGeBaq5Lxp03F9mImMWHWvskJrj8y4j00RLeAYKvfPPEhmTNX1hfkkxdmgeRni9OphuDMRzPhXlXc(FxiHWmcNeUgYmEP(7W4ne5AqD1YHxBMGPbEirMjKM1z9DbN(XcOAWJ4xvrwMGhUftdLHadYaUMWS7XCq7zwYDWK1SD5B8a0goHvzShWjRyqYWWMkIlu4Mznn2G1APOiFsfyHjcTNZ8xpFyiY3jfRWehBaFLqPQp6FdKskyTh82OxbgJLyvdJ5oUDaLgWDeJINeXjx3ouyDkxfS)yDcOlazuPuidPMC2oapEy7ljwHiG1jH26e3b3NWKl2I57oJNYW(wHXKC3bZfMVEsHccfPPHRXn3IUbfwsOItYn0YyvZavzNnmOkJToA4mUeYi4)(QlMBlf)tfugr47kJ0sk)wqRWV2GLGrejWpb)xHEdi3sn2z6GrtPqINlNm0GI1ZQwaFda5MMjaCp(lTOmcRfW4l(JDyZ4YitoaAaLVgpHrFKw36jQQUa9fndtiWiNOqXq6TLQ3GKAVDRWYdCzY9)mLkXL8ACWomlbPryQLfM41PjGniHTSUh4Ef5p8q1VRObgXdTDZ8uAuB56fNn50kS8sRDsOXXEuEykJUEJ(HhCnO7CN15WUE(MA5dCkwmHPByoNNdTBpbDgS(m8QymkgQPzWJpY(4aA0SpA4YkS1hVfC0E3fTIrV)EImXy((YDGdzyZ8xTCYJYe3HUTBok3K9AtnhCnAZjS2ZCIs5lMp5qi2xZaFkNjuMcIVoyQ2P19BQMV7YwoVZofW4PTd9NRo0mrtB9owv3K3lpwF1LDGhUteBfg7yZ5ZhmrjW)o8SehT9Meb(BjsoUhub(F4h(JBE7n)mkzxg9(nyYpnlxiXAIutrXjjv9tpPmscFSaddjyfLWu)rk0ImSbwITudtyuyjZVInslJwS8LMwMC0X25pzF(4FDsvnCZVR79HJF6IpDMNPl(BT(3SSLOtS7hSmNQ0g8d8r3Urid8)f4w8Mab(2zS3XRIP4N3yVZx1sd8DB)h4V3HbVoqJXdJDTJ0SKwzad(wPb3bB0gmyCURVCve65RN2ZxXsSvNKsc8Fuz0rKfCy1GYkgSFMlhA6q3Jax4AKRwsp7U01UgTLEg9CJroPRMyEZIQY57TIxm6(VJ6tz0KYObuGSJpUkuz0RkJUyU7P(Ean(EX8Eo3CDzjnVY0VsLRwF1OBz91IrsQC67oeb(FuPZ9W40YO(IBLrp8W(ZKregIUgR5lJoZEiDADv7OIDvaoUGhIKns2V8SLLJj8zjWHIFnxXQts0acHLrxHgulgwg94JUVDktAA2A495hN3hks2dOMqMfTXBC0viZwcS0UfXokvAuTaxR9AH8z)7HSNgPDS((WvV26Nl(24N(I6wFD5O(AVC(bOV0PDrRaVfSJ2ERV4EVgDlgVtxTuTnn7sh3lHCmNLQ2yX9axBKQ63cBeup3b1MRjybOJOOZTdCjV28w(9VYQriDGEzh8U2ED0o4)HGw2AECCBt(HFG8qAZD0l)sa5G57(s7d2mnt3OQpA029D32O(YofbDER(X1(h(14oxOW517nk9JfvAFtUDV)F8sfJx8AFWU1f7lJ79ODREGBXv7unxWy4Ob(qENRru)g)G2)e8pd]] )
-spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:LA1YokUoq0VLzdlrbOFk1nlgP7Oz2WMmRTJtCbXx8JiNkqZM8TpLDOBc9aj0AwakXUCDo1RJdBg73SuPab2Q5jZVl5H5ponz(IflEILIhQawALOyRyd9GvyO))HYdTz)3BvGxzalk0btoODczWv1UgFbzglnVrPXFzz5N7)zptgvbfSvecLkPe6mbQlyP)Uuv3Mf(jAZocCBMBn9EbQC22mTQgPTx78Tz)e2Q0QPS04Ir0lDEKlB8IG1CHdOvxfJrWkY1GK9DwANVyPR1ueXD(CgsS7DlXlABUwuJ89IDqW4fdBS0l24S18CpiWYWbUB4dezsn6vBJU)(rSMkb8iHyPfEfsvcriFVE9uLHYA40MQ2SjTzsOBXnwYiArYFyivVw0OX3XyaG8qLgSQ6sUryf9bl8(uYrQcf2MTSnB287tsIGw4m5c8gsPgNgbQi5no)F57QcC5D3pjYFd1f0zwxmCT0)NYf5ANtQBQ)iDu5bPQabjpWrAJyh1Yok39kFVclPTDAPBVT(ezpzYnuo7z81jvaGHPLrzvMgd)CShR54JM6Eqh2ChWblyuan(S812SfbN9Wn31FlE7XV0yrppIc)gaNgs(k7SU(ORIYt)Jth8ASXs9etooEOv7u2n8Cklhw9iUsh2FNxwm5CcT81izE(MAflDbuPWE7u6Vc8eBRo4DDKLC2SKHdTE8HG4qHg4DzU6WPObN34NVAAFMCHWn0dE9agjbEo64sfSC28ibVIGXG55lkfnqj(svYa2JiNCZ19(850O1v5ePTfHFen)lo3fp4iIfNu36FY1QnLi3dgHYEmZmVBU4D5X2SxiQLeH4kAcDpYnUqv9Z5QCHwheHJ7Tk5skWDrFheJOuux48fXR6MnIkWzvvYes(74vgJFHuHZ()n0XdeKVbm9j93o)INVYno9o6ivzJY7DEUYe)IOl5HymTd81b779np7fElLPJZKIgSmWGFk0sspW4INI9Nd]] )
+spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:fBvtZnkoq0Fl5IpKdugsCYKQs8Hu1mv2l(c5Secq2OX6dkjH94l8BFBjWJLtaJtT7uZb7ceD3VUFT0tnkg9okTKyPOvjZtUF(JX3ffV4(fjjOu7HAkkTMuSLSbEqseW))GPPTzF)x1untqLwc3zYbUIu6cLr1OlaZqP5nmU9FKO8ZI)dXpbgvtlqR(gkTIvws7mHAkqPVxXmTzUFK2SEGBZuRH3lSmLSnJZmw4ZRv62S3OBzCwek1VOh9kL2IlB0eN1yIIcRUYxJujjNtlrVIs7IfkDnhQiSsNJSq2D0s7G2MZjglEpzh1z8Dx24snzJsAW5AkXw5C4(l7GptmwnBRp8lMWAOfG9jekTqZSqNG4471RJycG1Srn1TzZAZkPDlUrcgblcXZ6O61KgU9igxaiZbjP2qXMAntUXeIMfA(TzlBZE8kipnTMtLmtfwqKKWW4EpQUW2M9CB2tZ9zDHsKtS(h)nkjlUcAxO4wk011cLEiqwMSyMlIyRcxYOlJNp7gpbf6yhnnvdZLJnM(NpVfKZvQso8XJDHAnTKvyPL4tE5lQtVI3ZSvWNv8s1EjS)(22S4OfbCWZVaR84f2C8Nilc7aa4dv9qc9W)duLdWlNMcMKjAeblF7ym0J)LsOprywNi30h89sqbPI7J7OyQKkyuOnSeQS7Cb7PRwJ6AIw88VKkw4HFIEd1g52UWKXDNAhhMjezMundBSnsyB8SE5moBhOgHZbE3TApWLkB4xE(UzNNrlFPlBgrQ6dixPCWcf(2i4Vc7P0T(Gw1LTUOnHIuqcbqCOGdApEUZ48ceM(f(8vtdZKbQx32YrRyFgnIW1fz2bVS4cD1H6DoS)VEV1q5ZPJxJMtWznp8tien4zTBok3DeOE9)4jereWKjF(MM1SnvwSMkimzpBL0D84Sl6GtEoic1gekxJeTA(r0W9R86WxxU0hLXy5CcN7HycfdtHsx4hqjzcXGZ70jHNP3r04UzddUkPIYHjep5pyeZf0WQjWCd1ADJy07xexThMh6O26VhlyeRRaA)lyoiqQDTVEt6g(uZQ7L9uTzsfeKowa5NzcUfOBSe00tnvOK)SbylxZcVHk(W2nFu6Nz6RmftGRtnhetRvAmt4hBFWimX4nNe5g0DpLaKOXzCWC97jAz3GIqOASvUc4ncVeKqfkVxO)n]] )
 spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:Ds1xVTniq8pl7L9ONTttAJ02K2KMu3l5fQuFdZz7ZnOGbla3SkvXN9DqtAsAtYYAKcg7d(9N7GJxWVJZAbpYxuMxEv(SYRZYlNKNpLZ8pnGC2a0ScEGMOHEA8h2gqJbXV(ZaAL9O2dQG4EZ9bbt27IR)jLbAJ46mJ2gApCw9Ou5)TMx)gYkPfnGn8f3WzlLTT4llbDnC2DlLUGi(hcInQiimD07nEPrhekPZtH7m2G4wCLujZ4S0htUc7GrLNMUOy7GNZqnuRWw(p5SxWHEM8u1GznA5SgR0twdIiup21LTjCTcC(mNNusq89Gysqeep)Cq4P0qL3u1kj991GOmN4zr555SgTo0UsQFyFg3NVKCYghcIphePa1kJPvnsQO1SwFoYNetahHvloOqT0TSQh0WfXCCHzdn(e6ZNgr)QZBn8rtd8Y0D4)PtsWboGYRLtFpVtsUA6fvgt1P)L1IWn7JbxsynJwlD2pi(cjo6xs5h4KdSafSizHRpoN7qVXyuXQB2RzXml2dsTlLikMEcb6J3H(4(zRkNNu58ZJuNIAfuzS17dtCFKhVej0lDoPcDNQiTn(M6uXLD9TgS2uJQ)JlWhEo7BbXnPd4f7F5945VD6iM7zdwSX0xdV2U5ycTNKxfy7n2358DHoOCpz2L0l5nhesc6rQ)sm4EDAxdwn1VXfBidJ(LrzClOATi0Bs7I)3d]])
