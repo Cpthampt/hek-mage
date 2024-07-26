@@ -216,6 +216,11 @@ spec:RegisterAuras( {
         copy = { 6136, 7321, 12484, 12485, 12486, 15850, 18101, 31257 },
         shared = "target",
 },
+    cho_gall = {
+        id = 82170,
+        duration = 3600,
+        max_stack = 1,
+},
     -- Your next damage spell has its mana cost reduced by $/10;s1%.
     clearcasting = {
         id = 12536,
@@ -493,14 +498,8 @@ spec:RegisterAuras( {
     -- Causes $s1 Fire damage every $t1 sec.  After $d or when the spell is dispelled, the target explodes causing $55362s1 Fire damage to all enemies within $55362a1 yards.
     living_bomb = {
         id = 44457,
-        cast = 0,
-        cooldown = 0,
-        gcd = "spell",
-
-        spend = 0.17,
-        spendType = "mana",
         --usable = function() return debuff.living_bomb.down end,
-        duration = compute_dot_duration(12,3),
+        duration = 12,
         tick_time = 3,
         max_stack = 1,
  },
@@ -921,6 +920,23 @@ spec:RegisterStateExpr("ignite_contrib_tracker", function()
     local data = getTrackerData()
     return data
 end)
+spec:RegisterStateExpr("has_cho_gall_debuff", function()
+    local DEBUFF_ID = 82170
+    for i = 1, 40 do
+        local name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId = UnitDebuff("player", i)
+        if not name then
+            break
+        end
+
+        if spellId == DEBUFF_ID then
+            return true
+        end
+    end
+
+    return false
+end)
+
+
 spec:RegisterStateExpr("combustion_settings_helper", function()
     local tracker_data = getCombustTrackerData()
     local settings_helper = {
@@ -2843,5 +2859,5 @@ spec:RegisterPackSelector( "frost", "Frost Wowhead", "|T135846:0|t Frost",
 -- spec:RegisterPack( "Arcane Wowhead", 20230924, [[Hekili:9EvBVTTnq4FlffWjfRw2X5TLIMc01bSLGTGH5o09jjrjF2MiuKAKu2nfb63(UJ6Lqjl7g0c0Vyjt(W7nE39Ck8KWpgoFbZcH3nB6StNE1SZdMoD6StonCU9HCiCEol9E2k8fjld)996uMekJ)KA7AGTG2)bHcFbLJrvOtrmRT2CZBMmz72TbBRWfKQYMSvzf3pzvbFbmjvWmgWmjdL9eMtOtwKBgRvwMLRKJtvkXc1wPzmlHl4woygNVbLEsbxyVrgMmSHplCoRWUwPdN)7W94jr7HVybuDaWKgoNoW4PxnE2zVPm(gjkBMOm2QzsJWP8Y4LAvwRtgeoxWnwd5JmfGpUZf3ajlralc)LW5PAUf0Cgg1y6vGnyl3UMlpzkEIusK4tNtgbFoxOm0kw00DISgqUgmGmfIulJY4Yf(kaXEQp2eb)lFHP7J5mFmlf4nMXQ53dDHzPaXswHW26knNjvvirhXKdcrpz3XwDamwG1hvhRudzQnquAH2adzP7jakaPnGlXWfzkrSeJsNtsmO(aLXJkJtkwUCyuuAJdsLDeSsOsyIi7AqNHpnS8CqhLUMUPc04f8dEbnUgI2srw0ip)hHr6G0Q2GI8NmMdz4K9DrN0hv1ZoH5l9ruNbMR2c6E4(zFC80hI2aCPPhOR8bLX1ALoIN5Ao0bhM13nUrLDAEE1b)hd2(GjFGQ44Y7bRbFBnZIlQb5r4tf5WB5eomplLVKdunyJMlmqeEpKzC6A)vIeEm7dKqg28Om(DLXZ8Y0zcru1FIOQ7QA8OQUCuvoj8z7v4la39wDinb7MzdmwSxzz81LXN5UzpU(YnJBmCbIIP1y0cVIlJF8XYySGFt0Q0fbx0roLXVAN7SAru5YN(DzvdAsTzJyblxUAh9xJZP(ZgiNYPQ(Pb7V8jJjzb5POR(2Y4lN63XihlS4M1reeNuU45jf)wTWgvQRrEvZomoJ0pjm7qDU77iAUqWzsIhRtA7CihZ5sanMfH8h(2HMX9Q23rqUGBBh0b9Kxug)CeYo7ZX2kcbKAR0rFNPD7D6mtvTrmDMs3NAaJxBWwveQgMv0zXwtsmVa7i8P3)33DZD)gYCwg)X1yjkplxPX7GLkm0CunXYrOdb)xb2vdDkJkJk5lSQmKWgxa7GjxbMGYB)donmbXd)bLe1RB7JQ7U(VOuSkV)30Afx)4t(8RAp)5FZNV82BCMpDStBimkJD0942uUJAjwOeo)LLX)jg0qnvpc0T4k(t6GDnh76A(0SoJDt5WtRhWzmf1htt5GdYCWjDCcVxghzSVex(VAYMlVTYCnbTj4)01t2jZ518LxtjxJouI1HevBwejPx81e1O9NFoSwEkvSXd)1QCOw4ii)5s8x)P5q8x1FUJkr(HMySpSwsxYXoaJ(OdZIp6zpMHVYpe6Vt7zNjk81B1yc(R4pwG)6TJb4VOpTVll9BKo3xMTe6DUX7Xp)AIz(AKyMcoDP2F3SbCNggtc(EPfV(SrhVhk6hFCp0ZVAaLvFSVMU2l17OkA3HKSBIGo52(mKKgBObF7Lt9b2sc2bZjtPQSM6qmC(KQA)YKQ0VoFgt)J0)Bv6VFZ3N0F9oFtcLnqJEsKoH))]] )
 --spec:RegisterPack( "Fire WoW Sims", 20240617, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
 -- spec:RegisterPack( "Frost Wowhead", 20230930, [[Hekili:fJ1FpsTnq0plOkT3Du2S)4G7a0DivkQTGApv1qf9VsI3Kj76Eo2bBNBzpDkF27yNnjoztwOuHQqcYAp(nppEM5ztWIG3h4Nq0qWnlNV885V485ElE6Y5p95b(6D5qGFoj(wYA8dojd)7Fsku6YOpi2UbijMP3Xe4himkrHmgnzJwNRE5SzB3U1BBLDEXISzBfA2TZwxqtGzXmIsbQzzi0Zsnyoljxnvk0envWNgleSeXwUAkzfLr1uqnn)oe8vfuM(T8Gvdt7lrAKdXb3G8FdnjbQSeuXb()g6RxwgvTdENllPX7MEhq5QwEo1YqACf5MA45uddrsCuww(oFixdzRazzKHByisksPmK7FxzuxoGd8nJgi29ys57WrXH)DjG4VIGeGeBaq5Lxp03F9mImMWHWvskJrj8y4j00RLeAYKvfPPEhmTNX1hfkkxdmgeRni9OphuDMRzPhXlXc(FxiHWmcNeUgYmEP(7W4ne5AqD1YHxBMGPbEirMjKM1z9DbN(XcOAWJ4xvrwMGhUftdLHadYaUMWS7XCq7zwYDWK1SD5B8a0goHvzShWjRyqYWWMkIlu4Mznn2G1APOiFsfyHjcTNZ8xpFyiY3jfRWehBaFLqPQp6FdKskyTh82OxbgJLyvdJ5oUDaLgWDeJINeXjx3ouyDkxfS)yDcOlazuPuidPMC2oapEy7ljwHiG1jH26e3b3NWKl2I57oJNYW(wHXKC3bZfMVEsHccfPPHRXn3IUbfwsOItYn0YyvZavzNnmOkJToA4mUeYi4)(QlMBlf)tfugr47kJ0sk)wqRWV2GLGrejWpb)xHEdi3sn2z6GrtPqINlNm0GI1ZQwaFda5MMjaCp(lTOmcRfW4l(JDyZ4YitoaAaLVgpHrFKw36jQQUa9fndtiWiNOqXq6TLQ3GKAVDRWYdCzY9)mLkXL8ACWomlbPryQLfM41PjGniHTSUh4Ef5p8q1VRObgXdTDZ8uAuB56fNn50kS8sRDsOXXEuEykJUEJ(HhCnO7CN15WUE(MA5dCkwmHPByoNNdTBpbDgS(m8QymkgQPzWJpY(4aA0SpA4YkS1hVfC0E3fTIrV)EImXy((YDGdzyZ8xTCYJYe3HUTBok3K9AtnhCnAZjS2ZCIs5lMp5qi2xZaFkNjuMcIVoyQ2P19BQMV7YwoVZofW4PTd9NRo0mrtB9owv3K3lpwF1LDGhUteBfg7yZ5ZhmrjW)o8SehT9Meb(BjsoUhub(F4h(JBE7n)mkzxg9(nyYpnlxiXAIutrXjjv9tpPmscFSaddjyfLWu)rk0ImSbwITudtyuyjZVInslJwS8LMwMC0X25pzF(4FDsvnCZVR79HJF6IpDMNPl(BT(3SSLOtS7hSmNQ0g8d8r3Urid8)f4w8Mab(2zS3XRIP4N3yVZx1sd8DB)h4V3HbVoqJXdJDTJ0SKwzad(wPb3bB0gmyCURVCve65RN2ZxXsSvNKsc8Fuz0rKfCy1GYkgSFMlhA6q3Jax4AKRwsp7U01UgTLEg9CJroPRMyEZIQY57TIxm6(VJ6tz0KYObuGSJpUkuz0RkJUyU7P(Ean(EX8Eo3CDzjnVY0VsLRwF1OBz91IrsQC67oeb(FuPZ9W40YO(IBLrp8W(ZKregIUgR5lJoZEiDADv7OIDvaoUGhIKns2V8SLLJj8zjWHIFnxXQts0acHLrxHgulgwg94JUVDktAA2A495hN3hks2dOMqMfTXBC0viZwcS0UfXokvAuTaxR9AH8z)7HSNgPDS((WvV26Nl(24N(I6wFD5O(AVC(bOV0PDrRaVfSJ2ERV4EVgDlgVtxTuTnn7sh3lHCmNLQ2yX9axBKQ63cBeup3b1MRjybOJOOZTdCjV28w(9VYQriDGEzh8U2ED0o4)HGw2AECCBt(HFG8qAZD0l)sa5G57(s7d2mnt3OQpA029D32O(YofbDER(X1(h(14oxOW517nk9JfvAFtUDV)F8sfJx8AFWU1f7lJ79ODREGBXv7unxWy4Ob(qENRru)g)G2)e8pd]] )
-spec:RegisterPack( "Fire Experimental", 20240619, [[Hekili:fBvtZnkoq0Fl5IpKdugsCYKQs8Hu1mv2l(c5Secq2OX6dkjH94l8BFBjWJLtaJtT7uZb7ceD3VUFT0tnkg9okTKyPOvjZtUF(JX3ffV4(fjjOu7HAkkTMuSLSbEqseW))GPPTzF)x1untqLwc3zYbUIu6cLr1OlaZqP5nmU9FKO8ZI)dXpbgvtlqR(gkTIvws7mHAkqPVxXmTzUFK2SEGBZuRH3lSmLSnJZmw4ZRv62S3OBzCwek1VOh9kL2IlB0eN1yIIcRUYxJujjNtlrVIs7IfkDnhQiSsNJSq2D0s7G2MZjglEpzh1z8Dx24snzJsAW5AkXw5C4(l7GptmwnBRp8lMWAOfG9jekTqZSqNG4471RJycG1Srn1TzZAZkPDlUrcgblcXZ6O61KgU9igxaiZbjP2qXMAntUXeIMfA(TzlBZE8kipnTMtLmtfwqKKWW4EpQUW2M9CB2tZ9zDHsKtS(h)nkjlUcAxO4wk011cLEiqwMSyMlIyRcxYOlJNp7gpbf6yhnnvdZLJnM(NpVfKZvQso8XJDHAnTKvyPL4tE5lQtVI3ZSvWNv8s1EjS)(22S4OfbCWZVaR84f2C8Nilc7aa4dv9qc9W)duLdWlNMcMKjAeblF7ym0J)LsOprywNi30h89sqbPI7J7OyQKkyuOnSeQS7Cb7PRwJ6AIw88VKkw4HFIEd1g52UWKXDNAhhMjezMundBSnsyB8SE5moBhOgHZbE3TApWLkB4xE(UzNNrlFPlBgrQ6dixPCWcf(2i4Vc7P0T(Gw1LTUOnHIuqcbqCOGdApEUZ48ceM(f(8vtdZKbQx32YrRyFgnIW1fz2bVS4cD1H6DoS)VEV1q5ZPJxJMtWznp8tien4zTBok3DeOE9)4jereWKjF(MM1SnvwSMkimzpBL0D84Sl6GtEoic1gekxJeTA(r0W9R86WxxU0hLXy5CcN7HycfdtHsx4hqjzcXGZ70jHNP3r04UzddUkPIYHjep5pyeZf0WQjWCd1ADJy07xexThMh6O26VhlyeRRaA)lyoiqQDTVEt6g(uZQ7L9uTzsfeKowa5NzcUfOBSe00tnvOK)SbylxZcVHk(W2nFu6Nz6RmftGRtnhetRvAmt4hBFWimX4nNe5g0DpLaKOXzCWC97jAz3GIqOASvUc4ncVeKqfkVxO)n]] )
+spec:RegisterPack( "Fire Experimental", 20240726, [[Hekili:1E1oVnooq4FlPXfBHGLCESbiRloG7qUM0OTMuus0wCdFiqsLe3OF73qs5yAh9i7ICf2qIC484Bg(nJqPOFIYRjwk6PS1zxV(USBts3S5(nOC7HwkkVLu9mzp8GKiG))hMM2x83V1s1mbvAjCNih4ksTttgvNUcedLx2X42)vIkpt93MEpiulTc903r5nS6AAqeQPcL)ZgMPVW9J0xmy4(c1o49kltj7l4mJf2ENs3x8i9zgNLGY9l6TEJsBX1DAItAmrrHvFYhIujPKtRr)fkpOlu(ooeryLUezbV7OK2rLTKtmw8RKxOoH3mVW1AYEL0Gl1uITXDGRN)aEpXy1SN9Q)MfKgsbyVdHYR0mlKjio8E3UeMaqnBsxBFXQ(IAAyX9sqiyrqFwhuVJ0XThTXmgYCqsAnuSPvZK7nXwZcj)(IT9f39japnTLtLmtdwqKKy14EpPTY2x8qFX9R9EDLsusS(hF3kz3mfSxEYmcf3sHSUwO0JzKTz3SYPrSvHRz0TPRxDLhGIpyaMMkHDsPTAAnRYsRXo)TZekp3gC)WR4xz2gyBfVw9QeQA)geij34JSgIbx1OW7jCooKNofiNuXNOAGZEbso4s4mX(3igyaDdUtYjJCSC5QH6LinoGg3oVliGRPWDdD9coGtv3TeWolY0EqRcv(whbYSEvekE51KsUsvZHnpg6)HzZ0HSzOo9HFaR4VpC)sb5xNxeFlbm(e1qPR)cWkNfN3pfmjt0jIw(BtbrPlW98)Mh9biZ5mlqGDQtrKV428fkMkPcgfYeBHyBJxBl0EiQxYNsDl084IUnXK0e9EQnXvYWKPb21PnZFuxNbkJZitwDUn2M6v)eCixKBBuwm0iKsEob(RYoXv)0jOrgNu8qfhi99GHXDkGW6n85RMpsqfZd6Q0ogx1kB8EpeGVjyJgTbneIDYP6sptAASKHZ2tW38Phyym)5J9h(GpbxFCMpBbYLrV9C1LnIgA1KTaVGVxZhAXVJTVXI1ubHjhqRSq9(ztya0GotmXT9WJyHYLAVe)kH2rJp5YwVEZho2tbtSafGPsPR8tgMT0OHNLPZIVK(crJddLh1FOHYHrZJ90OnnuR1nj3GujC1RWyNhjhFF6RjKUba5FdXb(nTlznisygFnRDG1s1xivGscX8PagIkMFf)WQaXEyEq0YJRwPK)QdqlxQbVNkUOCZRLHHv)DgFm6OlKvfmTwPXmH)7LgvdlKTprYn6X9qcaRgNWrFqfm7LmmHoOQoBJlaEKWRbkuHYFk0)9]] )
 spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:Ds1xVTniq8pl7L9ONTttAJ02K2KMu3l5fQuFdZz7ZnOGbla3SkvXN9DqtAsAtYYAKcg7d(9N7GJxWVJZAbpYxuMxEv(SYRZYlNKNpLZ8pnGC2a0ScEGMOHEA8h2gqJbXV(ZaAL9O2dQG4EZ9bbt27IR)jLbAJ46mJ2gApCw9Ou5)TMx)gYkPfnGn8f3WzlLTT4llbDnC2DlLUGi(hcInQiimD07nEPrhekPZtH7m2G4wCLujZ4S0htUc7GrLNMUOy7GNZqnuRWw(p5SxWHEM8u1GznA5SgR0twdIiup21LTjCTcC(mNNusq89Gysqeep)Cq4P0qL3u1kj991GOmN4zr555SgTo0UsQFyFg3NVKCYghcIphePa1kJPvnsQO1SwFoYNetahHvloOqT0TSQh0WfXCCHzdn(e6ZNgr)QZBn8rtd8Y0D4)PtsWboGYRLtFpVtsUA6fvgt1P)L1IWn7JbxsynJwlD2pi(cjo6xs5h4KdSafSizHRpoN7qVXyuXQB2RzXml2dsTlLikMEcb6J3H(4(zRkNNu58ZJuNIAfuzS17dtCFKhVej0lDoPcDNQiTn(M6uXLD9TgS2uJQ)JlWhEo7BbXnPd4f7F5945VD6iM7zdwSX0xdV2U5ycTNKxfy7n2358DHoOCpz2L0l5nhesc6rQ)sm4EDAxdwn1VXfBidJ(LrzClOATi0Bs7I)3d]])
