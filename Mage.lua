@@ -8,6 +8,28 @@ local strformat = string.format
 
 local spec = Hekili:NewSpecialization( 8 )
 
+function round_half_to_even(val)
+    -- if decimal value is exactly halfway
+    if val%1 == 0.5 then
+        local val_floored = floor(val)
+
+        -- if floored value is even then return even value
+        if val_floored%2 == 0 then return val_floored end
+
+        -- otherwise return the ceiling (which has to be the even value)
+        return val_floored + 1
+    end
+
+    -- round "normally"
+    return floor(val+0.5)
+end
+
+function compute_dot_duration(base_dur, base_tick_dur)
+    local tick_dur = floor(base_tick_dur/(1+UnitSpellHaste("player")/100) * 1000 + 0.5)/1000
+    local tick_cnt = round_half_to_even(base_dur/tick_dur)
+    return tick_dur * tick_cnt
+end
+
 spec:RegisterResource( Enum.PowerType.Mana )
 
 -- Talents
@@ -95,6 +117,26 @@ spec:RegisterStateExpr( "lb_duration", function()
  end )
 
 spec:RegisterAuras( {
+    active_flamestrike = {
+        duration = function() return 8 end,
+        max_stack = 20,
+        generate = function ( t )
+            local applied = action.flamestrike.lastCast
+
+            if applied and now - applied < 8 then
+                t.count = t.count + 1
+                t.expires = applied + 8
+                t.applied = applied
+                t.caster = "player"
+                return
+            end
+
+            t.count = 0
+            t.expires = 0
+            t.applied = 0
+            t.caster = "nobody"
+        end,
+    },
     -- Arcane spell damage increased by $s1% and mana cost of Arcane Blast increased by $s2%.
     arcane_blast = {
         id = 36032,
@@ -173,6 +215,11 @@ spec:RegisterAuras( {
         max_stack = 1,
         copy = { 6136, 7321, 12484, 12485, 12486, 15850, 18101, 31257 },
         shared = "target",
+},
+    cho_gall = {
+        id = 82170,
+        duration = 3600,
+        max_stack = 1,
 },
     -- Your next damage spell has its mana cost reduced by $/10;s1%.
     clearcasting = {
@@ -297,7 +344,7 @@ spec:RegisterAuras( {
         duration = 8,
         tick_time = 2,
         max_stack = 1,
-        copy = { 2120, 2121, 8422, 8423, 10215, 10216, 27086, 42925, 42926 },
+        copy = { 2120, 88148 },
 },
     -- Increases chance to critically hit with spells by $s1%.
     focus_magic = {
@@ -405,7 +452,7 @@ spec:RegisterAuras( {
     },
 
     -- Next Fire Blast stuns the target for $12355d.
-    impact = {
+    impact_stun = {
         id = 64343,
         duration = 10,
         max_stack = 1,
@@ -451,25 +498,8 @@ spec:RegisterAuras( {
     -- Causes $s1 Fire damage every $t1 sec.  After $d or when the spell is dispelled, the target explodes causing $55362s1 Fire damage to all enemies within $55362a1 yards.
     living_bomb = {
         id = 44457,
-        cast = 0,
-        cooldown = 0,
-        gcd = "spell",
-
-        spend = 0.17,
-        spendType = "mana",
-        duration = function() 
-            local description = GetSpellDescription(44457)
-            -- Pattern to match the duration value (number with optional decimal followed by " sec")
-            local duration = string.match(description, "(%d+%.%d+) sec")
-            if not duration then
-                duration = string.match(description, "(%d+) sec")
-            end
-            if duration then
-                return tonumber(duration) + .25
-            else
-                return nil -- Return nil if the duration is not found
-            end
-         end,
+        --usable = function() return debuff.living_bomb.down end,
+        duration = 12,
         tick_time = 3,
         max_stack = 1,
  },
@@ -561,6 +591,12 @@ spec:RegisterAuras( {
     slow_fall = {
         id = 130,
         duration = 30,
+        max_stack = 1,
+},
+    -- Mage lust
+    time_warp = {
+        id = 80353,
+        duration = 40,
         max_stack = 1,
 },
     water_elemental = {
@@ -663,7 +699,8 @@ local heating_spells = {
 }
 local heatingUp = false
 local igniteDamage = 0
-local lastTickTime = 0 -- Store the time of the last damage tick
+local lastTickTime = 0
+local fs_down = false
 
 -- Function to reset igniteDamage after a delay
 local function ResetIgniteDamage()
@@ -676,52 +713,689 @@ local function ResetIgniteDamage()
         C_Timer.After(0.1, ResetIgniteDamage)
     end
 end
+-- Initialize ignite and combustion tables
+local ignite = {}
+local combustion = {}
 
-spec:RegisterCombatLogEvent( function( _, subtype, _, sourceGUID, sourceName, _, _, destGUID, destName, destFlags, _, spellID, spellName, _, amount, ...)
-    --print("Spell Name: ", spellName)
-    --print("Spell ID: ", spellID)
-    --print("Subtype :", subtype)
-    --print("Damage: ", amount)
-    if not ( sourceGUID == state.GUID or destGUID == state.GUID ) then
+-- Allowed Spell IDs
+local allowedSpellIds = {
+    [133] = true,    -- Fireball
+    [44614] = true,  -- Frostfire Bolt
+    [2948] = true,   -- Scorch
+    [2136] = true,   -- Fireblast
+    [11366] = true,  -- Pyroblast
+    [92315] = true,  -- Instant Pyroblast
+    [31661] = true,  -- Dragon's Breath
+    [2120] = true,   -- Flamestrike
+    [11113] = true,  -- Blast Wave
+    [88148] = true,  -- Flamestrike from BW
+    [44461] = false, -- Living Bomb Explosion
+    [11129] = true   -- Combustion Initial
+}
+
+local function CombustionCooldown()
+    local startTime, cooldown = GetSpellCooldown(11129)
+    local currentTime = GetTime()
+    local remainingCooldown = math.max(0, cooldown - (currentTime - startTime))
+    --print("Debug: Combustion Cooldown:", remainingCooldown)
+    return remainingCooldown
+end
+
+local function CalculateBerserkingHaste(haste)
+    local _, cooldown = GetSpellCooldown(26297)
+    local _, raceEn = UnitRace("player")
+    if raceEn == "Troll" and cooldown == 0 then
+        haste = (((((haste / 100) + 1) * 1.2) - 1) * 100)
+    end
+    --print("Debug: Calculated Berserking Haste:", haste)
+    return haste
+end
+
+local function CalculateTicks()
+    local haste = UnitSpellHaste("player")
+    local ticks = 0
+    local berserkEnabled = true -- Set this based on your custom addon configuration
+    if berserkEnabled then
+            haste = CalculateBerserkingHaste(haste)
+    end
+
+    for i = 10, 40 do
+        local tickspeed =  1000 / (1000 / (10000 / (i - 0.5)))
+        local adjusted_tickspeed = (i % 2 == 0) and (math.floor(tickspeed) + 0.4999) or (math.floor(tickspeed) - 0.5001)
+
+        local breakpoint = 1000 / adjusted_tickspeed
+        local adjusted_haste = (haste / 100) + 1
+        if adjusted_haste > breakpoint then
+            ticks = i
+        else
+            break
+        end
+    end
+        --print("Debug: Calculated Ticks:", ticks)
+    return ticks
+end
+
+local function CalculateLivingBombContrib(spellpower, floorMastery)
+    return math.ceil((math.floor(0.25 * 937.3) + 0.258 * spellpower) * 1.25 * 1.03 * floorMastery * 1.15 / 3)
+end
+
+local function CalculatePyroblastContrib(spellpower, floorMastery)
+    return math.ceil((math.floor(0.175 * 973.3) + 0.180 * spellpower) * 1.25 * 1.03 * floorMastery / 3)
+end
+-- Create a table to store the variable data
+local ignite_contrib_tracker = {
+    lowest = nil,
+    highest = nil,
+    total = 0,
+    count = 0,
+    average = nil,
+    highest_ticks = 10,
+    lowest_ticks = 10,
+    average_ticks = 10,
+    total_ticks = 0,
+    highest_spellpower = 0,
+    lowest_spellpower = 0,
+    average_spellpower = 0,
+    total_spellpower = 0,
+    highest_mastery = 0,
+    lowest_mastery = 0,
+    average_mastery= 0,
+    total_mastery = 0,
+    highest_combust = 0,
+    lowest_combust = 0,
+    average_combust = 0,
+    total_combust = 0,
+}
+
+-- Function to update the tracker with a new number
+local function updateIgniteContribTracker(value, ticks, spellpower, mastery, combust)
+    -- Ignore nil or zero values
+    if value == nil or value == 0 then
         return
     end
 
-	if (sourceGUID == state.GUID) then
-        if subtype == 'SPELL_DAMAGE' then
-            if state.talent.hot_streak.enabled and heating_spells[spellID] == 1 then
-                local critical = select(7, ...)
-                if critical then
-                    heatingUp = true
-                else
-                    heatingUp = false
-                end
-            end
-            if spellID == 413843 then
-               igniteDamage = amount
-            end
-        elseif subtype == 'SPELL_AURA_APPLIED' then
-            if state.talent.hot_streak.enabled and spellID == spec.auras.hot_streak.id then
-                heatingUp = false
-            end
-        elseif subtype == 'SPELL_AURA_REMOVED' then
-            if spellID == 413841 then
-               C_Timer.After(0.1, ResetIgniteDamage)
-            end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest == nil or value < ignite_contrib_tracker.lowest then
+        ignite_contrib_tracker.lowest = value
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_combust == nil or combust < ignite_contrib_tracker.lowest_combust then
+        ignite_contrib_tracker.lowest_combust = combust
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_ticks == nil or ticks < ignite_contrib_tracker.lowest_ticks then
+        ignite_contrib_tracker.lowest_ticks = ticks
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_spellpower == nil or spellpower < ignite_contrib_tracker.lowest_spellpower then
+        ignite_contrib_tracker.lowest_spellpower = spellpower
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.lowest_mastery == nil or mastery < ignite_contrib_tracker.lowest_mastery then
+        ignite_contrib_tracker.lowest_mastery = mastery
+    end
+
+    -- Update the highest value
+    if ignite_contrib_tracker.highest == nil or value > ignite_contrib_tracker.highest then
+        ignite_contrib_tracker.highest = value
+    end
+    -- Update the lowest value
+    if ignite_contrib_tracker.highest_combust == nil or combust > ignite_contrib_tracker.highest_combust then
+        ignite_contrib_tracker.highest_combust = combust
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_ticks == nil or ticks > ignite_contrib_tracker.highest_ticks then
+        ignite_contrib_tracker.highest_ticks = ticks
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_spellpower == nil or spellpower > ignite_contrib_tracker.highest_spellpower then
+        ignite_contrib_tracker.highest_spellpower = spellpower
+    end
+    -- Update the highest value
+    if ignite_contrib_tracker.highest_mastery == nil or mastery > ignite_contrib_tracker.highest_mastery then
+        ignite_contrib_tracker.highest_mastery = mastery
+    end
+
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total = ignite_contrib_tracker.total + value
+    ignite_contrib_tracker.count = ignite_contrib_tracker.count + 1
+    ignite_contrib_tracker.average = ignite_contrib_tracker.total / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_ticks = ignite_contrib_tracker.total_ticks + ticks
+    ignite_contrib_tracker.average_ticks = ignite_contrib_tracker.total_ticks / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_spellpower = ignite_contrib_tracker.total_spellpower + spellpower
+    ignite_contrib_tracker.average_spellpower = ignite_contrib_tracker.total_spellpower / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_mastery = ignite_contrib_tracker.total_mastery + mastery
+    ignite_contrib_tracker.average_mastery = ignite_contrib_tracker.total_mastery / ignite_contrib_tracker.count
+    -- Update the total and count for calculating the average
+    ignite_contrib_tracker.total_combust = ignite_contrib_tracker.total_combust + combust
+    ignite_contrib_tracker.average_combust = ignite_contrib_tracker.total_combust / ignite_contrib_tracker.count
+end
+
+-- Function to get the tracker data
+local function getTrackerData()
+    return {
+        lowest = ignite_contrib_tracker.lowest,
+        highest = ignite_contrib_tracker.highest,
+        average = ignite_contrib_tracker.average,
+        lowest_ticks = ignite_contrib_tracker.lowest_ticks,
+        highest_ticks = ignite_contrib_tracker.highest_ticks,
+        average_ticks = ignite_contrib_tracker.average_ticks,
+        total_ticks = ignite_contrib_tracker.total_ticks,
+        count = ignite_contrib_tracker.count,
+        lowest_spellpower = ignite_contrib_tracker.lowest_spellpower,
+        highest_spellpower = ignite_contrib_tracker.highest_spellpower,
+        average_spellpower= ignite_contrib_tracker.average_spellpower,
+        lowest_mastery = ignite_contrib_tracker.lowest_mastery,
+        highest_mastery = ignite_contrib_tracker.highest_mastery,
+        average_mastery = ignite_contrib_tracker.average_mastery,
+        lowest_combust = ignite_contrib_tracker.lowest_combust,
+        highest_combust = ignite_contrib_tracker.highest_combust,
+        average_combust = ignite_contrib_tracker.average_combust,
+    }
+end
+-- Create a table to store the variable data
+local combust_tracker = {
+    lowest = nil,
+    highest = nil,
+    total = 0,
+    count = 0,
+    average = nil,
+}
+
+
+-- Function to get the tracker data
+local function getCombustTrackerData()
+    return {
+        lowest = combust_tracker.lowest,
+        highest = combust_tracker.highest,
+        average = combust_tracker.average,
+        count = combust_tracker.count,
+    }
+end
+-- Register state expression for predicted combustion
+spec:RegisterStateExpr("ignite_contrib_tracker", function()
+    local data = getTrackerData()
+    return data
+end)
+spec:RegisterStateExpr("has_cho_gall_debuff", function()
+    local DEBUFF_ID = 82170
+    for i = 1, 40 do
+        local name, icon, count, debuffType, duration, expirationTime, source, isStealable, nameplateShowPersonal, spellId = UnitDebuff("player", i)
+        if not name then
+            break
+        end
+
+        if spellId == DEBUFF_ID then
+            return true
         end
     end
 
-    if AURA_REMOVED[ subtype ] and spellID == spec.auras.fingers_of_frost.id then
+    return false
+end)
+
+
+spec:RegisterStateExpr("combustion_settings_helper", function()
+    local tracker_data = getCombustTrackerData()
+    local settings_helper = {
+        lowest_combust = 0,
+        highest_combust = 0,
+        average_combust = 0,
+    }
+
+    local spellpower = GetSpellBonusDamage(3)
+    local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
+
+
+    if tracker_data.lowest and tracker_data.highest and tracker_data.average > 0 then
+        settings_helper.lowest_combust = combust_tracker.lowest
+        settings_helper.highest_combust = combust_tracker.highest
+        settings_helper.average_combust = combust_tracker.average
+    end
+    return settings_helper
+end)
+
+
+local function IgniteContrib(floorMastery, mastery, ignite)
+    local combustTicks = CalculateTicks()
+    local spellpower = GetSpellBonusDamage(3)
+    if ignite then
+        local total_amount = ignite.total_amount
+        if total_amount then
+            local contrib = math.ceil((total_amount / ignite.ticks_remaining) / 2 * floorMastery / mastery)
+            return contrib
+        else
+            --print("Debug: Ignite Total Amount is nil during contribution calculation")
+        end
+    return 0
+    else
+        --print("Debug: No Ignite Found")
+    end
+
+end
+
+local function CalculatePredictedCombustion()
+    local spellpower = GetSpellBonusDamage(3)
+    local mastery = GetMastery() * 2.8 / 100 + 1
+    local floorMastery = math.floor(GetMastery() * 2.8) / 100 + 1
+
+    local targetGuid = UnitGUID("target")
+
+    local igniteEntry = ignite[targetGuid]
+    local igniteContrib = 0
+
+    local livingBombContrib = 0
+    local pyroblastContrib = 0
+    local critPresent = false
+
+    for i = 1, 40 do
+        local name, _, _, _, _, _, unitCaster, _, _, spellId = UnitDebuff("target", i)
+        if not name then break end
+        if unitCaster == "player" then
+        --print("Debug: Beginning contributions")
+            if spellId == 44457 then  -- Living Bomb
+                livingBombContrib = CalculateLivingBombContrib(spellpower, floorMastery)
+                --print("Debug: livingBombContrib:", livingBombContrib)
+            elseif spellId == 11366 or spellId == 92315 then  -- Pyroblast
+                pyroblastContrib = CalculatePyroblastContrib(spellpower, floorMastery)
+                --print("Debug: pyroblastContrib:", pyroblastContrib)
+            elseif spellId == 413841 or spellId == 12654 then  -- Ignite
+                --print(igniteEntry.total_amount)
+                igniteContrib = IgniteContrib(floorMastery, mastery, igniteEntry) or 0
+                --print("Debug: igniteContrib:", igniteContrib)
+            end
+        end
+        if spellId == 22959 or spellId == 17800 then  -- Critical debuffs
+            critPresent = true
+        end
+    end
+
+    local ticks = CalculateTicks()
+    --print("Ticks : ", ticks)
+    local tickDamage = livingBombContrib + pyroblastContrib + igniteContrib
+    local total = 0
+    if igniteEntry then
+        total = igniteContrib * igniteEntry.ticks_remaining
+    else
+        total = igniteContrib
+    end
+    --print("livingBombContrib ", livingBombContrib, " + pyroblastContrib ", pyroblastContrib," + igniteContrib ", igniteContrib )
+    --print("Tick damage : ")
+    local totalCombustionDamage = tickDamage * ticks
+
+    if critPresent == true then
+        totalCombustionDamage = totalCombustionDamage * (((GetSpellCritChance(3) + 5) / 100) + 1)
+    end
+
+    --print("Debug: Predicted Combustion - Tick Damage:", tickDamage, "Total Damage:", totalCombustionDamage
+    return totalCombustionDamage
+end
+
+-- Function to update the tracker with a new number
+local function combustTracker()
+    local ticks = CalculateTicks()
+    local combust = CalculatePredictedCombustion()
+
+    if combust == nil or combust == 0 then
+        return
+    end
+
+    -- Update the lowest value
+    if combust_tracker.lowest == nil or combust < combust_tracker.lowest then
+        combust_tracker.lowest = combust
+    end
+
+    -- Update the highest value
+    if combust_tracker.highest == nil or combust > combust_tracker.highest then
+        combust_tracker.highest = combust
+    end
+
+
+    -- Update the total and count for calculating the average
+    combust_tracker.total = combust_tracker.total + combust
+    combust_tracker.count = combust_tracker.count + 1
+    combust_tracker.average = combust_tracker.total / combust_tracker.count
+end
+
+local latestCritDamage = 0
+local latestMastery = 0
+local latestIgniteTick = 0
+local latestCombustionData = {
+tick_damage = 0,
+total_damage = 0
+}
+
+local function IgniteSpellcritUpdate(destGuid, amount, spellId)
+    -- Ensure the ignite entry exists or create a new one with default ticks remaining
+    local igniteEntry = ignite[destGuid]
+    if igniteEntry and igniteEntry.total_amount > 0 then -- If the target already has an ignite, get the ignite from the table
+        igniteEntry.ticks_remaining = 3
+    else -- If the target does not have an ignite, create a new one
+        igniteEntry.ticks_remaining = 2
+    end
+
+    -- Calculate mastery contribution
+    local mastery = GetMastery() * 2.8 / 100 + 1
+    --print("Mastery: ", mastery)
+    local total = amount * 0.4 * mastery
+    --print(amount .. " * 0.4 * " .. mastery .. " = " .. total)
+    --print("Ticks Remaining: ", igniteEntry.ticks_remaining)
+    --print(total / igniteEntry.ticks_remaining)
+
+    -- Debugging:--print before updating
+    --print("Debug: Before Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Total Amount No Combustion:", igniteEntry.total_amount_no_combustion)
+
+    -- Update or initialize total_amount
+    if igniteEntry.total_amount > 0 then
+        --print("Update: ", total / igniteEntry.ticks_remaining )
+        if spellId == 11129 then
+            igniteEntry.total_amount_no_combustion = igniteEntry.total_amount
+        end
+        igniteEntry.total_amount = igniteEntry.total_amount + total
+    else
+        --print("Initialize: ", total / igniteEntry.ticks_remaining )
+        igniteEntry.total_amount = total
+    end
+
+
+    -- Debugging:--print after updating
+    --print("Debug: After Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+
+    -- Store the updated entry back into the ignite table
+    ignite[destGuid] = igniteEntry
+
+    -- Debugging: Verify and--print the final stored ignite entry
+    --print("Debug: Final Ignite Entry - GUID:", destGuid, "Stored Total Amount:", ignite[destGuid].total_amount, "Stored Ticks Remaining:", ignite[destGuid].ticks_remaining)
+
+    return igniteEntry
+end
+
+
+-- Function to handle Ignite ticks
+local function IgniteTickUpdate(destGuid)
+    local igniteEntry = ignite[destGuid]
+    if igniteEntry then
+        --print("Debug: Ignite Tick - Initial State for GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+
+        -- Ensure igniteEntry is valid before performing tick updates
+        if igniteEntry.total_amount and igniteEntry.ticks_remaining and igniteEntry.ticks_remaining > 0 then
+            -- Calculate the tick damage and deplete the bank based on the remaining ticks
+            local tick_damage = igniteEntry.total_amount / igniteEntry.ticks_remaining
+            igniteEntry.total_amount = igniteEntry.total_amount - tick_damage
+            igniteEntry.ticks_remaining = igniteEntry.ticks_remaining - 1
+
+            ----print debug information for each tick
+
+
+            -- Update or remove the entry based on remaining ticks and total amount
+            if igniteEntry.ticks_remaining > 0 and igniteEntry.total_amount > 0 then
+                ignite[destGuid] = igniteEntry
+               -- print("Tick Damage:", tick_damage, "Remaining Ignite Bank:", igniteEntry.total_amount)
+            else
+                ignite[destGuid] = nil
+                --print("Debug: Ignite expired for GUID:", destGuid)
+            end
+        else
+            --print("Debug: Ignite Entry Invalid for Tick Update - GUID:", destGuid, "Total Amount:", igniteEntry.total_amount, "Ticks Remaining:", igniteEntry.ticks_remaining)
+            ignite[destGuid] = nil
+        end
+    else
+        --print("Debug: No Ignite Entry for GUID:", destGuid, "to update ticks")
+    end
+end
+
+-- Function to handle Ignite impact spread
+local function IgniteImpactSpread(destGuid, time)
+    if destGuid ~= ignite.impact_destGuid and time - ignite.impact_time < 0.1 then
+        ignite[destGuid] = {
+            total_amount = ignite.impact_amount,
+            ticks_remaining = 2
+        }
+        --print("Debug: Ignite Impact Spread to GUID:", destGuid, "Total Amount:", ignite.impact_amount)
+    end
+end
+
+-- Register state expression for predicted combustion
+spec:RegisterStateExpr("predicted_combustion", function()
+    combustTracker()
+    return CalculatePredictedCombustion()
+end)
+
+local lastMana = UnitPower("player", Enum.PowerType.Mana)
+local inactive, active = GetManaRegen()
+local avgManaGained = 0
+local avgManaSpent = 0
+local totalManaGained = 0
+local totalManaSpent = 0
+local difference = (avgManaSpent - avgManaGained) + active
+local timeToOOM = lastMana / difference
+local combatStart = 0
+local inCombat = false
+local currentRotation = "DPS" -- Initialize as DPS rotation
+
+-- Event handler for entering combat
+spec:RegisterEvent("PLAYER_REGEN_DISABLED", function(event)
+    combatStart = GetTime()
+    inCombat = true
+    totalManaGained = 0
+    totalManaSpent = 0
+    avgManaGained = 0
+    avgManaSpent = 0
+    currentRotation = "DPS" -- Start with DPS rotation
+end)
+
+-- Event handler for leaving combat
+spec:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+    combatStart = 0
+    inCombat = false
+    totalManaGained = 0
+    totalManaSpent = 0
+    avgManaGained = 0
+    avgManaSpent = 0
+    currentRotation = "DPS" -- Reset to DPS rotation
+end)
+
+spec:RegisterCombatLogEvent(function(...)
+    local timestamp, subtype, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
+          destGUID, destName, destFlags, destRaidFlags, spellID, spellName, spellSchool,
+          amount, overkill, school, resisted, blocked, absorbed, critical, glancing, crushing = ...
+    local inCombat = UnitAffectingCombat("player")
+
+    if not ignite[destGUID] then
+        ignite[destGUID] = { ticks_remaining = 2, total_amount = 0, total_amount_no_combustion = 0 }
+        --print("Debug: Initialized Ignite Entry for GUID:", destGUID)
+    end
+
+    lastMana = UnitPower("player", Enum.PowerType.Mana)
+    if sourceGUID == state.GUID then
+        if subtype == 'SPELL_DAMAGE' then
+            if spellID == 413841 or spellID == 413843 then
+                IgniteTickUpdate(destGUID)
+            end
+        end
+        if subtype == 'SPELL_DAMAGE' and allowedSpellIds[spellID] then
+            if critical then
+               -- print(amount)
+                IgniteSpellcritUpdate(destGUID, amount, spellID)
+            end
+        elseif subtype == 'SPELL_AURA_APPLIED' then
+            if spellID == 88148 or spellID == 2120 then
+                local countdown = 8
+                local delay = 1
+                fs_down = true
+                local timer
+                timer = C_Timer.NewTicker(delay, function()
+                    if countdown > 0 then
+                        countdown = countdown - 1
+                        fs_down = true
+                    else
+                        timer:Cancel()
+                        fs_down = false
+                    end
+                end, 9)
+            end
+
+
+
+        elseif subtype == 'SPELL_AURA_REMOVED' then
+            if spellID == 413841 then
+                C_Timer.After(0.1, function()
+                    ignite[destGUID] = nil
+                end)
+            end
+
+        elseif subtype == 'SPELL_CAST_SUCCESS' and spellID == 2120 then
+            local countdown = 8
+            local delay = 1
+            fs_down = true
+            local timer
+            timer = C_Timer.NewTicker(delay, function()
+                if countdown > 0 then
+                    countdown = countdown - 1
+                    fs_down = true
+                else
+                    timer:Cancel()
+                    fs_down = false
+                end
+            end, 9)
+        end
+    end
+
+    -- Handle other events such as SPELL_AURA_REMOVED and forced updates
+    if AURA_REMOVED[subtype] and spellID == spec.auras.fingers_of_frost.id then
         lastFingersConsumed = GetTime()
     end
 
-    if sourceGUID == state.GUID and subtype == "SPELL_CAST_SUCCESS" and spec.abilities[ spellID ] and spec.abilities[ spellID ].key == "frostbolt" then
+    if sourceGUID == state.GUID and subtype == "SPELL_CAST_SUCCESS" and spec.abilities[spellID] and spec.abilities[spellID].key == "frostbolt" then
         lastFrostboltCast = GetTime()
     end
-    
-    if AURA_EVENTS[ subtype ] and FORCED_RESETS[ spellID ] then
-        Hekili:ForceUpdate( "MAGE_AURA_CHANGED", true )
+
+    if AURA_EVENTS[subtype] and FORCED_RESETS[spellID] then
+        Hekili:ForceUpdate("MAGE_AURA_CHANGED", true)
     end
-end, false )
+end, false)
+
+-- Declare static variables to retain their values across function calls
+local oldHealth = nil
+local initialHealth, initialTime = nil, nil
+local averageHealth, averageTime = nil, nil
+
+-- Declare static variables to retain their values across function calls
+local oldHealth = nil
+local initialHealth, initialTime = nil, nil
+local averageHealth, averageTime = nil, nil
+local lastCalculatedTTD = 300  -- Start with a default high value
+
+spec:RegisterStateExpr("my_ttd", function()
+    -- Get current target health and time
+    local health = UnitHealth("target")
+    local time = GetTime()
+
+    -- If there's no valid target or the target is dead, return 0
+    if not UnitExists("target") or UnitIsDead("target") then
+        --print("Debug: No valid target or target is dead. Returning 0.")
+        return 300
+    end
+
+    --print("Debug: Starting function execution")
+    --print("Debug: Current target health:", health)
+    --print("Debug: Current time:", time)
+    if health == UnitHealthMax("target") then
+        lastCalculatedTTD = 300
+        return 300
+    end
+    -- Check if health has changed
+    if oldHealth ~= health then
+        oldHealth = health
+        --print("Debug: Health changed, updating oldHealth to:", oldHealth)
+
+        -- If target health is at maximum, reset the calculation but don't return a new TTD
+        if health == UnitHealthMax("target") then
+            initialHealth, initialTime = nil, nil
+            averageHealth, averageTime = nil, nil
+            --print("Debug: Target health is at maximum, resetting variables")
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        end
+
+        -- Initialize on first valid health update
+        if not initialHealth then
+            initialHealth, initialTime = health, time
+            averageHealth, averageTime = health, time
+            --print("Debug: Initializing health and time values")
+            --print("Debug: initialHealth, initialTime set to:", initialHealth, initialTime)
+            --print("Debug: averageHealth, averageTime set to:", averageHealth, averageTime)
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        end
+
+        -- Update average health and time
+        averageHealth = (averageHealth + health) * 0.5
+        averageTime = (averageTime + time) * 0.5
+       --print("Debug: Updating average health and time")
+       --print("Debug: Before update - averageHealth:", averageHealth, "averageTime:", averageTime)
+
+        -- Check if average health is increasing (which indicates healing or stabilization)
+        if averageHealth >= initialHealth then
+            initialHealth, initialTime = nil, nil
+            averageHealth, averageTime = nil, nil
+           --print("Debug: Average health is greater than or equal to initial health, resetting variables")
+            return lastCalculatedTTD  -- Return the last valid TTD without updating
+        else
+            -- Calculate time to die in seconds
+            local healthDropRate = (initialHealth - averageHealth)
+            local timeElapsed = (time - averageTime)
+            local timeToDie = health * timeElapsed / healthDropRate
+
+           --print("Debug: Calculating time to die")
+           --print("Debug: initialHealth:", initialHealth, "initialTime:", initialTime, "averageHealth:", averageHealth, "averageTime:", averageTime)
+           --print("Debug: Calculated TTD in seconds:", timeToDie)
+
+            lastCalculatedTTD = timeToDie  -- Store the calculated TTD
+            return timeToDie  -- Return the calculated time to die in seconds
+        end
+    else
+       --print("Debug: Health did not change, returning last calculated TTD:", lastCalculatedTTD)
+    end
+
+    return lastCalculatedTTD  -- Return the last valid TTD if health has not changed
+end)
+
+-- Register state expressions to expose Ignite data
+spec:RegisterStateExpr("ignite_total_amount", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.total_amount then
+        return igniteEntry.total_amount
+    else
+        return 0
+    end
+end)
+
+spec:RegisterStateExpr("ignite_ticks_remaining", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.ticks_remaining then
+        return igniteEntry.ticks_remaining
+    else
+        return 0
+    end
+end)
+
+spec:RegisterStateExpr("ignite_total_amount_no_combustion", function()
+    local targetGuid = UnitGUID("target")
+    local igniteEntry = ignite[targetGuid]
+
+    if igniteEntry and igniteEntry.total_amount_no_combustion then
+        return igniteEntry.total_amount_no_combustion
+    else
+        return 0
+    end
+end)
+
+
 
 
 local mana_gem_values = {
@@ -974,6 +1648,7 @@ spec:RegisterAbilities( {
         handler = function()
             if target.within10 then
                 applyDebuff( "target", "blast_wave" )
+                applyBuff("active_flamestrike")
             end
         end,
 
@@ -1263,7 +1938,7 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-
+            removeBuff("impact_stun")
         end,
 
 
@@ -1369,7 +2044,7 @@ spec:RegisterAbilities( {
     flamestrike = {
         id = 2120,
         cast = function() return ( buff.firestarter.up or buff.presence_of_mind.up ) and 0 or 2 * haste end,
-        cooldown = 0,
+        cooldown = 8,
         gcd = "spell",
 
         spend = function() return ( buff.firestarter.up or buff.clearcasting.up ) and 0 or 0.300 * ( 1 - 0.01 * talent.precision.rank ) * ( buff.arcane_power.up and 1.1 or 1 ) end,
@@ -1378,12 +2053,10 @@ spec:RegisterAbilities( {
         startsCombat = true,
 
         handler = function()
-            if buff.firestarter.up then
-                removeBuff( "firestarter" )
-            else
-                if buff.clearcasting.up then removeBuff( "clearcasting" ) end
-                if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
-            end
+            if buff.clearcasting.up then removeBuff( "clearcasting" ) end
+            if buff.presence_of_mind.up then removeBuff( "presence_of_mind" ) end
+            applyDebuff( "target", "flamestrike" )
+            applyBuff("active_flamestrike")
         end,
 
         
@@ -1719,6 +2392,7 @@ spec:RegisterAbilities( {
         spendType = "mana",
 
         startsCombat = true,
+        cycle = "living_bomb",
 
         handler = function()
             applyDebuff( "target", "living_bomb" )
@@ -2092,6 +2766,8 @@ spec:RegisterAbilities( {
     }
 } )
 
+spec:RegisterStateExpr( "is_fs_down", function() return fs_down end )
+
 
 spec:RegisterOptions( {
     enabled = true,
@@ -2101,9 +2777,9 @@ spec:RegisterOptions( {
     gcd = 1459,
 
     nameplates = true,
-    nameplateRange = 8,
+    nameplateRange = 15,
 
-    damage = false,
+    damage = true,
     damageExpiration = 6,
 
     potion = "potion_of_speed",
@@ -2114,37 +2790,38 @@ spec:RegisterOptions( {
     -- package3 = "",
 } )
 
-spec:RegisterSetting( "spellsteal_cooldown", 0, {
+spec:RegisterSetting( "minimum_combustion", 150, {
     type = "range",
-    name = strformat( CAPACITANCE_SHIPMENT_COOLDOWN, Hekili:GetSpellLinkWithTexture( spec.abilities.spellsteal.id ) ),
-    desc = strformat( "If set above zero, %s will not be recommended more frequently than the specified timeframe (in seconds).\n\n"
-        .. "This setting can prevent %s from remaining the first recommendation when your enemy has stacking buffs or multiple buffs.",
-        Hekili:GetSpellLinkWithTexture( spec.abilities.spellsteal.id ), spec.abilities.spellsteal.name ),
+    name = strformat( "Targeted Minimum Combustion Amount: ", Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
+    desc = strformat( "Set a minimum amount for a combustion",
+        Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
     width = "full",
     min = 0,
-    max = 15,
-    step = 0.1
+    max = 1000,
+    step = 10
 } )
 
-spec:RegisterStateExpr( "spellsteal_cooldown", function()
-    return settings.spellsteal_cooldown or 0
+spec:RegisterStateExpr( "minimum_combustion", function()
+    return settings.minimum_combustion * 1000 or 140000
 end )
 
-
-spec:RegisterSetting( "living_bomb_cap", 3, {
+spec:RegisterSetting( "cooldown_combustion_increase", 50, {
     type = "range",
-    name = strformat( SPELL_MAX_CHARGES:gsub( "%%d", "%%s"), Hekili:GetSpellLinkWithTexture( spec.abilities.living_bomb.id ) ),
-    desc = strformat( "When target swapping is enabled, %s may be recommended on the specified number of targets.\n\n"
-        .. "This setting can help balance mana expenditure vs. multi-target damage.",
-        Hekili:GetSpellLinkWithTexture( spec.abilities.living_bomb.id ) ),
+    name = strformat( "Lust Combust Increase: ", Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
+    desc = strformat( "Percent increase during Bloodlust",
+        Hekili:GetSpellLinkWithTexture( spec.abilities.combustion.id ) ),
     width = "full",
-    min = 1,
-    max = 10,
-    step = 1
+    min = 0,
+    max = 100,
+    step = 5
 } )
 
-spec:RegisterStateExpr( "living_bomb_cap", function()
-    return settings.living_bomb_cap or 3
+spec:RegisterStateExpr( "cooldown_combustion_increase", function()
+    return settings.cooldown_combustion_increase or 50
+end )
+
+spec:RegisterStateExpr( "combustion_with_cooldowns", function()
+    return (settings.minimum_combustion * 1000) * (1+settings.cooldown_combustion_increase / 100)
 end )
 
 
@@ -2161,13 +2838,13 @@ spec:RegisterStateExpr( "use_cold_snap", function()
 end )
 
 
-spec:RegisterPackSelector( "arcane", "Arcane Wowhead", "|T135932:0|t Arcane",
+spec:RegisterPackSelector( "arcane", "Arcane Experimental WoW Sims", "|T135932:0|t Arcane",
     "If you have spent more points in |W|T135932:0|t Arcane|w than in any other tree, this priority will be automatically selected for you.",
     function( tab1, tab2, tab3 )
         return tab1 > max( tab2, tab3 )
     end )
 
-spec:RegisterPackSelector( "fire", "Fire WoW Sims", "|T135810:0|t Fire",
+spec:RegisterPackSelector( "fire", "Fire Experimental", "|T135810:0|t Fire",
     "If you have spent more points in |W|T135810:0|t Fire|w than in any other tree, this priority will be automatically selected for you.",
     function( tab1, tab2, tab3 )
         return tab2 > max( tab1, tab3 )
@@ -2180,5 +2857,7 @@ spec:RegisterPackSelector( "frost", "Frost Wowhead", "|T135846:0|t Frost",
     end )
 
 -- spec:RegisterPack( "Arcane Wowhead", 20230924, [[Hekili:9EvBVTTnq4FlffWjfRw2X5TLIMc01bSLGTGH5o09jjrjF2MiuKAKu2nfb63(UJ6Lqjl7g0c0Vyjt(W7nE39Ck8KWpgoFbZcH3nB6StNE1SZdMoD6StonCU9HCiCEol9E2k8fjld)996uMekJ)KA7AGTG2)bHcFbLJrvOtrmRT2CZBMmz72TbBRWfKQYMSvzf3pzvbFbmjvWmgWmjdL9eMtOtwKBgRvwMLRKJtvkXc1wPzmlHl4woygNVbLEsbxyVrgMmSHplCoRWUwPdN)7W94jr7HVybuDaWKgoNoW4PxnE2zVPm(gjkBMOm2QzsJWP8Y4LAvwRtgeoxWnwd5JmfGpUZf3ajlralc)LW5PAUf0Cgg1y6vGnyl3UMlpzkEIusK4tNtgbFoxOm0kw00DISgqUgmGmfIulJY4Yf(kaXEQp2eb)lFHP7J5mFmlf4nMXQ53dDHzPaXswHW26knNjvvirhXKdcrpz3XwDamwG1hvhRudzQnquAH2adzP7jakaPnGlXWfzkrSeJsNtsmO(aLXJkJtkwUCyuuAJdsLDeSsOsyIi7AqNHpnS8CqhLUMUPc04f8dEbnUgI2srw0ip)hHr6G0Q2GI8NmMdz4K9DrN0hv1ZoH5l9ruNbMR2c6E4(zFC80hI2aCPPhOR8bLX1ALoIN5Ao0bhM13nUrLDAEE1b)hd2(GjFGQ44Y7bRbFBnZIlQb5r4tf5WB5eomplLVKdunyJMlmqeEpKzC6A)vIeEm7dKqg28Om(DLXZ8Y0zcru1FIOQ7QA8OQUCuvoj8z7v4la39wDinb7MzdmwSxzz81LXN5UzpU(YnJBmCbIIP1y0cVIlJF8XYySGFt0Q0fbx0roLXVAN7SAru5YN(DzvdAsTzJyblxUAh9xJZP(ZgiNYPQ(Pb7V8jJjzb5POR(2Y4lN63XihlS4M1reeNuU45jf)wTWgvQRrEvZomoJ0pjm7qDU77iAUqWzsIhRtA7CihZ5sanMfH8h(2HMX9Q23rqUGBBh0b9Kxug)CeYo7ZX2kcbKAR0rFNPD7D6mtvTrmDMs3NAaJxBWwveQgMv0zXwtsmVa7i8P3)33DZD)gYCwg)X1yjkplxPX7GLkm0CunXYrOdb)xb2vdDkJkJk5lSQmKWgxa7GjxbMGYB)donmbXd)bLe1RB7JQ7U(VOuSkV)30Afx)4t(8RAp)5FZNV82BCMpDStBimkJD0942uUJAjwOeo)LLX)jg0qnvpc0T4k(t6GDnh76A(0SoJDt5WtRhWzmf1htt5GdYCWjDCcVxghzSVex(VAYMlVTYCnbTj4)01t2jZ518LxtjxJouI1HevBwejPx81e1O9NFoSwEkvSXd)1QCOw4ii)5s8x)P5q8x1FUJkr(HMySpSwsxYXoaJ(OdZIp6zpMHVYpe6Vt7zNjk81B1yc(R4pwG)6TJb4VOpTVll9BKo3xMTe6DUX7Xp)AIz(AKyMcoDP2F3SbCNggtc(EPfV(SrhVhk6hFCp0ZVAaLvFSVMU2l17OkA3HKSBIGo52(mKKgBObF7Lt9b2sc2bZjtPQSM6qmC(KQA)YKQ0VoFgt)J0)Bv6VFZ3N0F9oFtcLnqJEsKoH))]] )
-spec:RegisterPack( "Fire WoW Sims", 20240609, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
+--spec:RegisterPack( "Fire WoW Sims", 20240617, [[Hekili:1w1YUTnmqWVLCj3QHKQDEaK6d9qr6fFHbi3Oef1kBwZhcKujnx43Exs5hQjk2nbOWWcuCjNDMLRgsZPpqjnmpqxvKvmp7QSBNvKNFBXvuI)LoGs6y8TS14antHp)HWcHQhnpgQicLlg)fPH1eXXz6TCCnusDVq6)PMw)AWXf1bC6QBOKnIMgyyjGJtjpSr4cvX)Sq1USgQmT47CVWOdvsHZJHBn2q19WwHumJsstMub0Y6LEC4Q89p8ucOz1sOH(DkzahkXcDsqlCBkvmnJs4wHhScCu89zk2VdvFjuLEH3BTG2hQwgQYlwKLHyUQ404RmspOlzwLX(g074(LZxCzDFBlMP1WWYM13fb(RNg4AW6a7wHE9yyJBC(P3i3OQ7D7gFyJEHcRW39nuzxhQUel(R1ySYgMkv7xIrUgLCkwdKO8Wsq6oEsP4jKtL1ywEvKUxSMAjZ53pFA2J6yNUxmn9)yufz6NIQVLstoTfumHg7)UluvmBXKfxukx95pjw()qDtCqeP51FEAI6pFX7rZ5F8(LiDU500PfDDkt0FmDgsGc9k8VkbhP)(arKEckbnOeGBOwht8TNRZlH3gJV05TaBl2gGqDKzhQRrWYZoTmgP7XP4IjklEbp9DEe1ZyN1krN5sJ9VWKBmYgZZ6XLIdDWO4t(y5NZi7G)0yOBfR34lpcgEQxmCMV3GBOhzifJT0uMOaPRY2NTYDZ89PSjhoKYE3gIAMuMsXzm)CCJLVjTY3XNzI2S4psNfILp2Hlv(iU9xSBR)d3xiSwJTuOs3ZojcN5IbUr)REK7Xsx5Aqnnkjn9e6Of3ZORKFMz14PGlEZnR3VjQJ7zYgSvxzs7I(Nd]] )
 -- spec:RegisterPack( "Frost Wowhead", 20230930, [[Hekili:fJ1FpsTnq0plOkT3Du2S)4G7a0DivkQTGApv1qf9VsI3Kj76Eo2bBNBzpDkF27yNnjoztwOuHQqcYAp(nppEM5ztWIG3h4Nq0qWnlNV885V485ElE6Y5p95b(6D5qGFoj(wYA8dojd)7Fsku6YOpi2UbijMP3Xe4himkrHmgnzJwNRE5SzB3U1BBLDEXISzBfA2TZwxqtGzXmIsbQzzi0Zsnyoljxnvk0envWNgleSeXwUAkzfLr1uqnn)oe8vfuM(T8Gvdt7lrAKdXb3G8FdnjbQSeuXb()g6RxwgvTdENllPX7MEhq5QwEo1YqACf5MA45uddrsCuww(oFixdzRazzKHByisksPmK7FxzuxoGd8nJgi29ys57WrXH)DjG4VIGeGeBaq5Lxp03F9mImMWHWvskJrj8y4j00RLeAYKvfPPEhmTNX1hfkkxdmgeRni9OphuDMRzPhXlXc(FxiHWmcNeUgYmEP(7W4ne5AqD1YHxBMGPbEirMjKM1z9DbN(XcOAWJ4xvrwMGhUftdLHadYaUMWS7XCq7zwYDWK1SD5B8a0goHvzShWjRyqYWWMkIlu4Mznn2G1APOiFsfyHjcTNZ8xpFyiY3jfRWehBaFLqPQp6FdKskyTh82OxbgJLyvdJ5oUDaLgWDeJINeXjx3ouyDkxfS)yDcOlazuPuidPMC2oapEy7ljwHiG1jH26e3b3NWKl2I57oJNYW(wHXKC3bZfMVEsHccfPPHRXn3IUbfwsOItYn0YyvZavzNnmOkJToA4mUeYi4)(QlMBlf)tfugr47kJ0sk)wqRWV2GLGrejWpb)xHEdi3sn2z6GrtPqINlNm0GI1ZQwaFda5MMjaCp(lTOmcRfW4l(JDyZ4YitoaAaLVgpHrFKw36jQQUa9fndtiWiNOqXq6TLQ3GKAVDRWYdCzY9)mLkXL8ACWomlbPryQLfM41PjGniHTSUh4Ef5p8q1VRObgXdTDZ8uAuB56fNn50kS8sRDsOXXEuEykJUEJ(HhCnO7CN15WUE(MA5dCkwmHPByoNNdTBpbDgS(m8QymkgQPzWJpY(4aA0SpA4YkS1hVfC0E3fTIrV)EImXy((YDGdzyZ8xTCYJYe3HUTBok3K9AtnhCnAZjS2ZCIs5lMp5qi2xZaFkNjuMcIVoyQ2P19BQMV7YwoVZofW4PTd9NRo0mrtB9owv3K3lpwF1LDGhUteBfg7yZ5ZhmrjW)o8SehT9Meb(BjsoUhub(F4h(JBE7n)mkzxg9(nyYpnlxiXAIutrXjjv9tpPmscFSaddjyfLWu)rk0ImSbwITudtyuyjZVInslJwS8LMwMC0X25pzF(4FDsvnCZVR79HJF6IpDMNPl(BT(3SSLOtS7hSmNQ0g8d8r3Urid8)f4w8Mab(2zS3XRIP4N3yVZx1sd8DB)h4V3HbVoqJXdJDTJ0SKwzad(wPb3bB0gmyCURVCve65RN2ZxXsSvNKsc8Fuz0rKfCy1GYkgSFMlhA6q3Jax4AKRwsp7U01UgTLEg9CJroPRMyEZIQY57TIxm6(VJ6tz0KYObuGSJpUkuz0RkJUyU7P(Ean(EX8Eo3CDzjnVY0VsLRwF1OBz91IrsQC67oeb(FuPZ9W40YO(IBLrp8W(ZKregIUgR5lJoZEiDADv7OIDvaoUGhIKns2V8SLLJj8zjWHIFnxXQts0acHLrxHgulgwg94JUVDktAA2A495hN3hks2dOMqMfTXBC0viZwcS0UfXokvAuTaxR9AH8z)7HSNgPDS((WvV26Nl(24N(I6wFD5O(AVC(bOV0PDrRaVfSJ2ERV4EVgDlgVtxTuTnn7sh3lHCmNLQ2yX9axBKQ63cBeup3b1MRjybOJOOZTdCjV28w(9VYQriDGEzh8U2ED0o4)HGw2AECCBt(HFG8qAZD0l)sa5G57(s7d2mnt3OQpA029D32O(YofbDER(X1(h(14oxOW517nk9JfvAFtUDV)F8sfJx8AFWU1f7lJ79ODREGBXv7unxWy4Ob(qENRru)g)G2)e8pd]] )
+spec:RegisterPack( "Fire Experimental", 20240726, [[Hekili:1E1oVnooq4FlPXfBHGLCESbiRloG7qUM0OTMuus0wCdFiqsLe3OF73qs5yAh9i7ICf2qIC484Bg(nJqPOFIYRjwk6PS1zxV(USBts3S5(nOC7HwkkVLu9mzp8GKiG))hMM2x83V1s1mbvAjCNih4ksTttgvNUcedLx2X42)vIkpt93MEpiulTc903r5nS6AAqeQPcL)ZgMPVW9J0xmy4(c1o49kltj7l4mJf2ENs3x8i9zgNLGY9l6TEJsBX1DAItAmrrHvFYhIujPKtRr)fkpOlu(ooeryLUezbV7OK2rLTKtmw8RKxOoH3mVW1AYEL0Gl1uITXDGRN)aEpXy1SN9Q)MfKgsbyVdHYR0mlKjio8E3UeMaqnBsxBFXQ(IAAyX9sqiyrqFwhuVJ0XThTXmgYCqsAnuSPvZK7nXwZcj)(IT9f39japnTLtLmtdwqKKy14EpPTY2x8qFX9R9EDLsusS(hF3kz3mfSxEYmcf3sHSUwO0JzKTz3SYPrSvHRz0TPRxDLhGIpyaMMkHDsPTAAnRYsRXo)TZekp3gC)WR4xz2gyBfVw9QeQA)geij34JSgIbx1OW7jCooKNofiNuXNOAGZEbso4s4mX(3igyaDdUtYjJCSC5QH6LinoGg3oVliGRPWDdD9coGtv3TeWolY0EqRcv(whbYSEvekE51KsUsvZHnpg6)HzZ0HSzOo9HFaR4VpC)sb5xNxeFlbm(e1qPR)cWkNfN3pfmjt0jIw(BtbrPlW98)Mh9biZ5mlqGDQtrKV428fkMkPcgfYeBHyBJxBl0EiQxYNsDl084IUnXK0e9EQnXvYWKPb21PnZFuxNbkJZitwDUn2M6v)eCixKBBuwm0iKsEob(RYoXv)0jOrgNu8qfhi99GHXDkGW6n85RMpsqfZd6Q0ogx1kB8EpeGVjyJgTbneIDYP6sptAASKHZ2tW38Phyym)5J9h(GpbxFCMpBbYLrV9C1LnIgA1KTaVGVxZhAXVJTVXI1ubHjhqRSq9(ztya0GotmXT9WJyHYLAVe)kH2rJp5YwVEZho2tbtSafGPsPR8tgMT0OHNLPZIVK(crJddLh1FOHYHrZJ90OnnuR1nj3GujC1RWyNhjhFF6RjKUba5FdXb(nTlznisygFnRDG1s1xivGscX8PagIkMFf)WQaXEyEq0YJRwPK)QdqlxQbVNkUOCZRLHHv)DgFm6OlKvfmTwPXmH)7LgvdlKTprYn6X9qcaRgNWrFqfm7LmmHoOQoBJlaEKWRbkuHYFk0)9]] )
+spec:RegisterPack( "Arcane Experimental WoW Sims", 20240622, [[Hekili:Ds1xVTniq8pl7L9ONTttAJ02K2KMu3l5fQuFdZz7ZnOGbla3SkvXN9DqtAsAtYYAKcg7d(9N7GJxWVJZAbpYxuMxEv(SYRZYlNKNpLZ8pnGC2a0ScEGMOHEA8h2gqJbXV(ZaAL9O2dQG4EZ9bbt27IR)jLbAJ46mJ2gApCw9Ou5)TMx)gYkPfnGn8f3WzlLTT4llbDnC2DlLUGi(hcInQiimD07nEPrhekPZtH7m2G4wCLujZ4S0htUc7GrLNMUOy7GNZqnuRWw(p5SxWHEM8u1GznA5SgR0twdIiup21LTjCTcC(mNNusq89Gysqeep)Cq4P0qL3u1kj991GOmN4zr555SgTo0UsQFyFg3NVKCYghcIphePa1kJPvnsQO1SwFoYNetahHvloOqT0TSQh0WfXCCHzdn(e6ZNgr)QZBn8rtd8Y0D4)PtsWboGYRLtFpVtsUA6fvgt1P)L1IWn7JbxsynJwlD2pi(cjo6xs5h4KdSafSizHRpoN7qVXyuXQB2RzXml2dsTlLikMEcb6J3H(4(zRkNNu58ZJuNIAfuzS17dtCFKhVej0lDoPcDNQiTn(M6uXLD9TgS2uJQ)JlWhEo7BbXnPd4f7F5945VD6iM7zdwSX0xdV2U5ycTNKxfy7n2358DHoOCpz2L0l5nhesc6rQ)sm4EDAxdwn1VXfBidJ(LrzClOATi0Bs7I)3d]])
